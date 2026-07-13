@@ -22,6 +22,9 @@
   // use_isam2_dogleg               : If true, use dogleg optimizer (robust but slow)
   // isam2_relinearize_skip         : Relinearization is performed every $isam2_relinearize_skip optimization calls
   // isam2_relinearize_thresh       : Relinearization is performed only when linear delta gets larger than this
+  //
+  // --- Export settings ---
+  // save_merged_pcd                : If true, also save the full merged map as a single map.pcd when dumping the map
   */
   "global_mapping": {
     "so_name": "libglobal_mapping.so",
@@ -46,6 +49,8 @@
     // Optimizer settings
     "use_isam2_dogleg": false,
     "isam2_relinearize_skip": 1,
-    "isam2_relinearize_thresh": 0.1
+    "isam2_relinearize_thresh": 0.1,
+    // Export settings
+    "save_merged_pcd": true
   }
 }

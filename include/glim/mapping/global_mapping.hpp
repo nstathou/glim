@@ -52,6 +52,8 @@ public:
   double isam2_relinearize_thresh;
 
   double init_pose_damping_scale;
+
+  bool save_merged_pcd;
 };
 
 /**
