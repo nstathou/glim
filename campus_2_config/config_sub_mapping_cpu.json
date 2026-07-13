@@ -12,7 +12,7 @@
     "keyframe_update_min_points": 2500, // 500
     "keyframe_update_interval_rot": 0.5233, // 30deg // 3.14,
     "keyframe_update_interval_trans": 0.5,
-    "max_keyframe_overlap": 0.7,
+    "max_keyframe_overlap": 0.2,
     // Relative pose factors
     "create_between_factors": true,
     "between_registration_type": "GICP",
@@ -23,7 +23,7 @@
     "keyframe_voxelmap_levels": 2,
     "keyframe_voxelmap_scaling_factor": 2.0,
     // Post processing
-    "submap_downsample_resolution": 0.5,
+    "submap_downsample_resolution": 0.3,
     "submap_voxel_resolution": 0.5
   }
 }

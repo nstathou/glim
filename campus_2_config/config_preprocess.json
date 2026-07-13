@@ -17,7 +17,7 @@
   // num_threads                 : Number of threads for preprocessing
   */
   "preprocess": {
-    "distance_near_thresh": 0.5,
+    "distance_near_thresh": 5.0,
     "distance_far_thresh": 100.0,
     "use_random_grid_downsampling": true,
     "downsample_resolution": 0.1, // low for indoors, higher for outdoors
@@ -28,8 +28,8 @@
     "outlier_std_mul_factor": 1.0,
     "enable_cropbox_filter": true,
     "crop_bbox_frame": "lidar",
-    "crop_bbox_min": [-2.0, -1.0, -1.0],
-    "crop_bbox_max": [2.0, 1.0, 1.0],
+    "crop_bbox_min": [-4.0, -1.5, -2.0],
+    "crop_bbox_max": [4.0, 1.5, 2.0],
     "k_correspondences": 16, //10,
     "num_threads": 8
   }
