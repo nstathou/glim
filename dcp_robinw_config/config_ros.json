@@ -70,7 +70,7 @@
     ],
     // Topics
     "imu_topic": "/vectornav/imu",
-    "points_topic": "/spot/ouster/points",
+    "points_topic": "/iv_points",
     "image_topic": "/image",
     // QoS options
     "imu_qos": {
