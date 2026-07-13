@@ -1,6 +1,8 @@
 #include <glim/mapping/global_mapping.hpp>
 
 #include <map>
+#include <vector>
+#include <fstream>
 #include <unordered_set>
 #include <spdlog/spdlog.h>
 #include <boost/filesystem.hpp>
@@ -47,6 +49,55 @@ using gtsam::symbol_shorthand::X;
 
 using Callbacks = GlobalMappingCallbacks;
 
+namespace {
+
+// Save a merged point cloud as a single binary PCD file.
+// Writes x, y, z (and intensity if available) as 32-bit floats.
+bool save_pcd(const std::string& path, const gtsam_points::PointCloud& points) {
+  std::ofstream ofs(path, std::ios::binary);
+  if (!ofs) {
+    return false;
+  }
+
+  const size_t num_points = points.size();
+  const bool has_intensities = points.has_intensities();
+
+  ofs << "# .PCD v0.7 - Point Cloud Data file format\n";
+  ofs << "VERSION 0.7\n";
+  if (has_intensities) {
+    ofs << "FIELDS x y z intensity\n";
+    ofs << "SIZE 4 4 4 4\n";
+    ofs << "TYPE F F F F\n";
+    ofs << "COUNT 1 1 1 1\n";
+  } else {
+    ofs << "FIELDS x y z\n";
+    ofs << "SIZE 4 4 4\n";
+    ofs << "TYPE F F F\n";
+    ofs << "COUNT 1 1 1\n";
+  }
+  ofs << "WIDTH " << num_points << "\n";
+  ofs << "HEIGHT 1\n";
+  ofs << "VIEWPOINT 0 0 0 1 0 0 0\n";
+  ofs << "POINTS " << num_points << "\n";
+  ofs << "DATA binary\n";
+
+  const int stride = has_intensities ? 4 : 3;
+  std::vector<float> buffer(num_points * stride);
+  for (size_t i = 0; i < num_points; i++) {
+    buffer[i * stride + 0] = static_cast<float>(points.points[i].x());
+    buffer[i * stride + 1] = static_cast<float>(points.points[i].y());
+    buffer[i * stride + 2] = static_cast<float>(points.points[i].z());
+    if (has_intensities) {
+      buffer[i * stride + 3] = static_cast<float>(points.intensities[i]);
+    }
+  }
+  ofs.write(reinterpret_cast<const char*>(buffer.data()), sizeof(float) * buffer.size());
+
+  return ofs.good();
+}
+
+}  // namespace
+
 GlobalMappingParams::GlobalMappingParams() {
   Config config(GlobalConfig::get_config_path("config_global_mapping"));
 
@@ -75,6 +126,8 @@ GlobalMappingParams::GlobalMappingParams() {
   isam2_relinearize_thresh = config.param<double>("global_mapping", "isam2_relinearize_thresh", 0.1);
 
   init_pose_damping_scale = config.param<double>("global_mapping", "init_pose_damping_scale", 1e10);
+
+  save_merged_pcd = config.param<bool>("global_mapping", "save_merged_pcd", true);
 }
 
 GlobalMappingParams::~GlobalMappingParams() {}
@@ -628,6 +681,19 @@ void GlobalMapping::save(const std::string& path) {
     }
 
     submaps[i]->save((boost::format("%s/%06d") % path % i).str());
+  }
+
+  if (params.save_merged_pcd) {
+    const std::string pcd_path = path + "/map.pcd";
+    logger->info("exporting merged map to {}", pcd_path);
+    const auto merged = export_points();
+    if (!merged || !merged->has_points()) {
+      logger->warn("no points available for merged map export");
+    } else if (!save_pcd(pcd_path, *merged)) {
+      logger->warn("failed to write merged map to {}", pcd_path);
+    } else {
+      logger->info("saved merged map with {} points to {}", merged->size(), pcd_path);
+    }
   }
 
   logger->info("saving config");
