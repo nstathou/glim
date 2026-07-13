@@ -1,5 +1,9 @@
 #include <glim/viewer/offline_viewer.hpp>
 
+#include <cctype>
+#include <vector>
+#include <fstream>
+#include <algorithm>
 #include <boost/filesystem.hpp>
 #include <gtsam_points/config.hpp>
 #include <gtsam_points/optimizers/linearization_hook.hpp>
@@ -14,6 +18,63 @@
 #include <guik/viewer/light_viewer.hpp>
 
 namespace glim {
+
+namespace {
+
+// Save a merged point cloud as a single binary PCD file.
+// Writes x, y, z (and intensity if available) as 32-bit floats.
+bool save_pcd(const std::string& path, const gtsam_points::PointCloud& points) {
+  std::ofstream ofs(path, std::ios::binary);
+  if (!ofs) {
+    return false;
+  }
+
+  const size_t num_points = points.size();
+  const bool has_intensities = points.has_intensities();
+
+  ofs << "# .PCD v0.7 - Point Cloud Data file format\n";
+  ofs << "VERSION 0.7\n";
+  if (has_intensities) {
+    ofs << "FIELDS x y z intensity\n";
+    ofs << "SIZE 4 4 4 4\n";
+    ofs << "TYPE F F F F\n";
+    ofs << "COUNT 1 1 1 1\n";
+  } else {
+    ofs << "FIELDS x y z\n";
+    ofs << "SIZE 4 4 4\n";
+    ofs << "TYPE F F F\n";
+    ofs << "COUNT 1 1 1\n";
+  }
+  ofs << "WIDTH " << num_points << "\n";
+  ofs << "HEIGHT 1\n";
+  ofs << "VIEWPOINT 0 0 0 1 0 0 0\n";
+  ofs << "POINTS " << num_points << "\n";
+  ofs << "DATA binary\n";
+
+  const int stride = has_intensities ? 4 : 3;
+  std::vector<float> buffer(num_points * stride);
+  for (size_t i = 0; i < num_points; i++) {
+    buffer[i * stride + 0] = static_cast<float>(points.points[i].x());
+    buffer[i * stride + 1] = static_cast<float>(points.points[i].y());
+    buffer[i * stride + 2] = static_cast<float>(points.points[i].z());
+    if (has_intensities) {
+      buffer[i * stride + 3] = static_cast<float>(points.intensities[i]);
+    }
+  }
+  ofs.write(reinterpret_cast<const char*>(buffer.data()), sizeof(float) * buffer.size());
+
+  return ofs.good();
+}
+
+// Returns true if the path ends with the given (case-insensitive) extension.
+bool has_extension(const std::string& path, const std::string& ext) {
+  if (path.size() < ext.size()) {
+    return false;
+  }
+  return std::equal(ext.rbegin(), ext.rend(), path.rbegin(), [](char a, char b) { return std::tolower(a) == std::tolower(b); });
+}
+
+}  // namespace
 
 OfflineViewer::OfflineViewer(const std::string& init_map_path) : init_map_path(init_map_path) {}
 
@@ -157,7 +218,7 @@ void OfflineViewer::main_menu() {
   // export map
   if (start_export_map) {
     guik::RecentFiles recent_files("offline_viewer_export");
-    const std::string path = pfd::save_file("Select the file destination", recent_files.most_recent(), {"PLY", "*.ply"}).result();
+    const std::string path = pfd::save_file("Select the file destination", recent_files.most_recent(), {"Point cloud", "*.ply *.pcd", "PLY", "*.ply", "PCD", "*.pcd"}).result();
     if (!path.empty()) {
       recent_files.push(path);
       progress_modal->open<bool>("export", [this, path](guik::ProgressInterface& progress) { return export_map(progress, path); });
@@ -224,6 +285,14 @@ bool OfflineViewer::export_map(guik::ProgressInterface& progress, const std::str
 
   progress.set_text("Writing to file");
   progress.increment();
+
+  if (has_extension(path, ".pcd")) {
+    if (!save_pcd(path, *points)) {
+      logger->warn("Failed to write PCD to {}", path);
+      return false;
+    }
+    return true;
+  }
 
   glk::PLYData ply;
   ply.vertices.reserve(points->size());
