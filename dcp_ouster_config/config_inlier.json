@@ -1,0 +1,77 @@
+{
+  // InLiER loop detector for GLIM.
+  //
+  // Copy this file into the config directory you pass as -p config_path:=...
+  // GlobalConfig::get_config_path("config_inlier") defaults the filename to
+  // "config_inlier.json" and the directory to global/config_path, so no edit
+  // to config.json is needed.
+  "inlier_loop_detector": {
+    // --- InLiER encoder (mirrors InLiER config/default.yaml "encoder") ------
+    "N_h": 10,                    // height slices
+    "z_min": 0.0,                 // lower z above ground (m)
+    "z_max": 20.0,                // upper z above ground (m)
+    "N_r": 20,                    // radial bins
+    "N_s": 7,                     // shape classes
+    "N_a": 60,                    // azimuth bins
+    "r_max": 100.0,               // max radius for radial/azimuth binning (m)
+    "xy_max": 100.0,              // XY half-extent of the BEV cell grid (m)
+    // InLiER recommends cell_size ~= 2.0 * voxel_size. GLIM submaps are already
+    // downsampled by global_mapping/submap_voxel_resolution (0.5 default, 1.0 in
+    // campus_2_config), so set this to 2 x that value.
+    "cell_size": 1.0,
+    "window": 3,                  // local-maxima NMS window (odd)
+    "point_mode": "keypoints",    // "keypoints" | "all_points"
+    "max_kp_per_slice": 256,
+    "max_kp_total": 1280,
+    "ransac_iters": 250,          // ground-plane RANSAC
+    "ransac_dist_thresh": 1.0,
+    "ransac_min_inliers": 200,
+    "shape_radius": 1.5,
+    "shape_min_neighbors": 8,
+
+    // --- Stage 1: MINT shortlist -------------------------------------------
+    "stage1_topk": 100,
+    "stage1_topk_pct": -1.0,      // fraction of DB size; < 0 uses stage1_topk
+    "stage1_min_shared_rows": 3,
+    "stage1_mint_mode": "compact",             // "compact" | "full"
+    "stage1_mint_scoring": "l1_intersection",  // "cosine" | "raw_intersection" | "l1_intersection"
+
+    // --- Stage 2: BEAM rerank + yaw ----------------------------------------
+    "stage2_topk": 20,
+    "stage2_topk_pct": -1.0,      // fraction of the stage-1 shortlist; < 0 uses stage2_topk
+    "stage2_min_shared_bins": 4,
+    "stage2_min_shared_az_cols": 3,
+    "stage2_score_threshold": 0.0,
+
+    // --- Token-guided geometric verification -------------------------------
+    "verify_topv": 5,             // top-V stage-2 candidates to verify per submap
+    "verify_ransac_iters": 500,
+    "verify_inlier_dist": 1.0,    // RANSAC inlier distance (m)
+    "verify_min_correspondences": 32,
+    "verify_min_ransac_inliers": 16,
+    "verify_min_keypoint_inliers": 8,
+    "verify_spatial_tol": 0,
+    "verify_min_keypoint_inlier_ratio": 0.3,
+
+    // --- Gates (all must pass before a factor is created) -------------------
+    "exclusion_n": 3,             // skip the N most recent submaps (causal exclusion)
+    "min_travel_dist": 10.0,      // min arc length between the two submaps (m)
+    "gicp_inlier_fraction": 0.8,  // GICP refinement acceptance
+    "gicp_max_correspondence_dist": 1.5,
+    "gicp_max_iterations": 5,
+    "gicp_num_threads": 4,
+    "max_rot_diff": 15.0,         // consistency vs current estimate (deg)
+    "max_trans_diff": 20.0,       // consistency vs current estimate (m). A negative
+                                  // max_rot_diff or max_trans_diff disables this gate.
+
+    // --- Loop factor -------------------------------------------------------
+    // A robust kernel is mandatory. Without it one false positive can throw
+    // IndeterminantLinearSystemException and force a full ISAM2 rebuild.
+    "loop_factor_stddev": 0.1,
+    "loop_factor_robust_width": 1.0,
+    "request_optimize_on_loop": true,
+
+    // --- Runtime -----------------------------------------------------------
+    "max_queue_size": 10          // needs_wait() backpressure threshold
+  }
+}

@@ -20,7 +20,7 @@
     "distance_near_thresh": 5.0,
     "distance_far_thresh": 100.0,
     "use_random_grid_downsampling": true,
-    "downsample_resolution": 0.1, // low for indoors, higher for outdoors
+    "downsample_resolution": 0.2, // low for indoors, higher for outdoors
     "random_downsample_target": 5000,
     "random_downsample_rate": 0.1,
     "enable_outlier_removal": true,

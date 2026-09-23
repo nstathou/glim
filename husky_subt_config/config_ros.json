@@ -66,6 +66,7 @@
       "libmemory_monitor.so",
       "libstandard_viewer.so",
       "librviz_viewer.so"
+      // "libglim_inlier.so"
       // "libimu_validator.so"
     ],
     // Topics

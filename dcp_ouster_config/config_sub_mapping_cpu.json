@@ -5,14 +5,14 @@
   "sub_mapping": {
     "so_name": "libsub_mapping.so",
     "enable_imu": true,
-    "enable_optimization": true,
+    "enable_optimization": false,
     // Keyframe update strategy
-    "max_num_keyframes": 10,
+    "max_num_keyframes": 40,
     "keyframe_update_strategy": "DISPLACEMENT", //"OVERLAP",
-    "keyframe_update_min_points": 2500, // 500
-    "keyframe_update_interval_rot": 0.5233, // 30deg // 3.14,
-    "keyframe_update_interval_trans": 1.0,
-    "max_keyframe_overlap": 0.8,
+    "keyframe_update_min_points": 500, // 500
+    "keyframe_update_interval_rot": 0.26166, // 15deg // 3.14,
+    "keyframe_update_interval_trans": 0.1,
+    "max_keyframe_overlap": 0.9,
     // Relative pose factors
     "create_between_factors": true,
     "between_registration_type": "GICP",
