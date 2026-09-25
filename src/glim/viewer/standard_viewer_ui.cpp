@@ -58,6 +58,10 @@ bool StandardViewer::drawable_filter(const std::string& name) {
     return false;
   }
 
+  if ((!show_odom_traj && name == "traj_odom") || (!show_submap_traj && name == "traj_submap") || (!show_global_traj && name == "traj_global")) {
+    return false;
+  }
+
   return true;
 }
 
@@ -128,6 +132,15 @@ void StandardViewer::drawable_selection() {
   ImGui::Checkbox("submaps", &show_submaps);
   ImGui::SameLine();
   ImGui::Checkbox("factors", &show_factors);
+
+  ImGui::Separator();
+  ImGui::Text("traj");
+  ImGui::SameLine();
+  ImGui::Checkbox("odom##traj", &show_odom_traj);
+  ImGui::SameLine();
+  ImGui::Checkbox("submap##traj", &show_submap_traj);
+  ImGui::SameLine();
+  ImGui::Checkbox("global##traj", &show_global_traj);
 
   ImGui::Separator();
 

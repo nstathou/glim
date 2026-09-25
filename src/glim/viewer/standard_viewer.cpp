@@ -58,6 +58,9 @@ StandardViewer::StandardViewer() : logger(create_module_logger("viewer")) {
   show_odometry_factors = false;
   show_submaps = true;
   show_factors = true;
+  show_odom_traj = true;
+  show_submap_traj = true;
+  show_global_traj = true;
 
   show_odometry_status = false;
   last_id = last_num_points = 0;

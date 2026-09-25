@@ -121,6 +121,10 @@ void StandardViewer::set_callbacks() {
       trajectory->add_odom(new_frame->stamp, new_frame->T_world_sensor(), 1);
       const Eigen::Isometry3f pose = resolve_pose(new_frame);
 
+      // Front-end trajectory (raw odometry IMU poses, red)
+      odom_traj.push_back(new_frame->T_world_imu.translation().cast<float>());
+      viewer->update_drawable("traj_odom", std::make_shared<glk::ThinLines>(odom_traj, true, 2.0f), guik::FlatRed());
+
       if (track) {
         viewer->lookat(pose);
       }
@@ -436,6 +440,19 @@ void StandardViewer::set_callbacks() {
     });
   });
 
+  // New submap callback: sub mapping trajectory (frame poses after submap-local optimization, yellow)
+  SubMappingCallbacks::on_new_submap.add([this](const SubMap::ConstPtr& submap) {
+    std::vector<Eigen::Vector3f> positions;
+    for (const auto& frame : submap->frames) {
+      positions.push_back(frame->T_world_imu.translation().cast<float>());
+    }
+
+    invoke([this, positions] {
+      submap_traj.insert(submap_traj.end(), positions.begin(), positions.end());
+      guik::LightViewer::instance()->update_drawable("traj_submap", std::make_shared<glk::ThinLines>(submap_traj, true, 2.0f), guik::FlatColor(1.0f, 1.0f, 0.0f, 1.0f));
+    });
+  });
+
   // Submap optimization callback
   SubMappingCallbacks::on_optimize_submap.add([this](gtsam::NonlinearFactorGraph& graph, gtsam::Values& values) {
     std::vector<std::pair<int, int>> factors;
@@ -536,6 +553,16 @@ void StandardViewer::set_callbacks() {
       submap_poses[i] = submaps[i]->T_world_origin.cast<float>();
     }
 
+    // Global mapping trajectory (same as traj_imu.txt in the dump, green), rebuilt since past submap poses change
+    std::vector<Eigen::Vector3f> global_traj;
+    for (const auto& submap : submaps) {
+      const Eigen::Isometry3d T_world_endpoint_L = submap->T_world_origin * submap->T_origin_endpoint_L;
+      const Eigen::Isometry3d T_odom_imu0 = submap->frames.front()->T_world_imu;
+      for (const auto& frame : submap->frames) {
+        global_traj.push_back((T_world_endpoint_L * T_odom_imu0.inverse() * frame->T_world_imu).translation().cast<float>());
+      }
+    }
+
     std::vector<SubMapMemoryStats> mem_stats;
     if (show_memory_stats) {
       mem_stats.reserve(submaps.size() - submap_memstats_count);
@@ -545,8 +572,9 @@ void StandardViewer::set_callbacks() {
       submap_memstats_count = submaps.size();
     }
 
-    invoke([this, latest_submap, submap_ids, submap_poses, mem_stats] {
+    invoke([this, latest_submap, submap_ids, submap_poses, mem_stats, global_traj] {
       auto viewer = guik::LightViewer::instance();
+      viewer->update_drawable("traj_global", std::make_shared<glk::ThinLines>(global_traj, true, 2.0f), guik::FlatGreen());
 
       submap_memstats.insert(submap_memstats.end(), mem_stats.begin(), mem_stats.end());
 
