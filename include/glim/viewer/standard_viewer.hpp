@@ -78,6 +78,13 @@ private:
   bool show_submaps;
   bool show_factors;
 
+  // Trajectories of each stage, drawn uncorrected in the world frame to compare drift directly
+  bool show_odom_traj;
+  bool show_submap_traj;
+  bool show_global_traj;
+  std::vector<Eigen::Vector3f> odom_traj;
+  std::vector<Eigen::Vector3f> submap_traj;
+
   bool show_odometry_status;
   int last_id;
   int last_num_points;
