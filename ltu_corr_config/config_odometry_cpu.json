@@ -22,7 +22,7 @@
     "registration_type": "GICP",
     "max_iterations": 8,
     "lru_thresh": 100,
-    "target_downsampling_rate": 0.3,
+    "target_downsampling_rate": 0.5,
     // GICP + iVox params
     "ivox_resolution": 0.3, // low for indoors, higher for outdoors
     "ivox_min_dist": 0.1,
