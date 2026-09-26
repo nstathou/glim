@@ -17,7 +17,7 @@
     "isam2_relinearize_skip": 1,
     "isam2_relinearize_thresh": 0.1,
     "fix_imu_bias": false,
-    "compute_covs": false,
+    "compute_covs": true,
     // Registration settings
     "registration_type": "GICP",
     "max_iterations": 8,
@@ -32,7 +32,7 @@
     "vgicp_voxelmap_scaling_factor": 2.0,
     // Optimizer params
     "validate_imu": true,
-    "save_imu_rate_trajectory": true,
+    "save_imu_rate_trajectory": false,
     "num_threads": 8
   }
 }
