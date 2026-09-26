@@ -1,0 +1,30 @@
+{
+  /*** FAST-LIO2 odometry estimation (glim_ext, GPL) ***
+  // Requires glim_ext built with -DENABLE_FASTLIO2=ON.
+  // T_lidar_imu is read from config_sensors.json. IMU noise below replaces sensors.imu_*_noise for odometry.
+  //
+  // num_threads       : Number of threads
+  // max_iterations    : Max iterated EKF iterations per scan
+  // filter_size_surf  : Voxel downsampling of the input scan [m] (applied after GLIM preprocessing)
+  // filter_size_map   : ikd-Tree map downsampling resolution [m]
+  // cube_side_length  : Local map cube size [m]
+  // det_range         : LiDAR detection range [m], used for local map shifting
+  // gyr_cov / acc_cov : Gyroscope / accelerometer measurement covariance
+  // b_gyr_cov / b_acc_cov : Gyroscope / accelerometer bias random walk covariance
+  // extrinsic_est_en  : If true, estimate LiDAR-IMU extrinsic online
+  */
+  "odometry_estimation": {
+    "so_name": "libodometry_estimation_fastlio2.so",
+    "num_threads": 8,
+    "max_iterations": 8,
+    "filter_size_surf": 0.3,
+    "filter_size_map": 0.3,
+    "cube_side_length": 1500.0,
+    "det_range": 60.0,
+    "gyr_cov": 0.1,
+    "acc_cov": 0.1,
+    "b_gyr_cov": 0.0001,
+    "b_acc_cov": 0.0001,
+    "extrinsic_est_en": false
+  }
+}
