@@ -49,55 +49,6 @@ using gtsam::symbol_shorthand::X;
 
 using Callbacks = GlobalMappingCallbacks;
 
-namespace {
-
-// Save a merged point cloud as a single binary PCD file.
-// Writes x, y, z (and intensity if available) as 32-bit floats.
-bool save_pcd(const std::string& path, const gtsam_points::PointCloud& points) {
-  std::ofstream ofs(path, std::ios::binary);
-  if (!ofs) {
-    return false;
-  }
-
-  const size_t num_points = points.size();
-  const bool has_intensities = points.has_intensities();
-
-  ofs << "# .PCD v0.7 - Point Cloud Data file format\n";
-  ofs << "VERSION 0.7\n";
-  if (has_intensities) {
-    ofs << "FIELDS x y z intensity\n";
-    ofs << "SIZE 4 4 4 4\n";
-    ofs << "TYPE F F F F\n";
-    ofs << "COUNT 1 1 1 1\n";
-  } else {
-    ofs << "FIELDS x y z\n";
-    ofs << "SIZE 4 4 4\n";
-    ofs << "TYPE F F F\n";
-    ofs << "COUNT 1 1 1\n";
-  }
-  ofs << "WIDTH " << num_points << "\n";
-  ofs << "HEIGHT 1\n";
-  ofs << "VIEWPOINT 0 0 0 1 0 0 0\n";
-  ofs << "POINTS " << num_points << "\n";
-  ofs << "DATA binary\n";
-
-  const int stride = has_intensities ? 4 : 3;
-  std::vector<float> buffer(num_points * stride);
-  for (size_t i = 0; i < num_points; i++) {
-    buffer[i * stride + 0] = static_cast<float>(points.points[i].x());
-    buffer[i * stride + 1] = static_cast<float>(points.points[i].y());
-    buffer[i * stride + 2] = static_cast<float>(points.points[i].z());
-    if (has_intensities) {
-      buffer[i * stride + 3] = static_cast<float>(points.intensities[i]);
-    }
-  }
-  ofs.write(reinterpret_cast<const char*>(buffer.data()), sizeof(float) * buffer.size());
-
-  return ofs.good();
-}
-
-}  // namespace
-
 GlobalMappingParams::GlobalMappingParams() {
   Config config(GlobalConfig::get_config_path("config_global_mapping"));
 
@@ -126,6 +77,9 @@ GlobalMappingParams::GlobalMappingParams() {
   isam2_relinearize_thresh = config.param<double>("global_mapping", "isam2_relinearize_thresh", 0.1);
 
   init_pose_damping_scale = config.param<double>("global_mapping", "init_pose_damping_scale", 1e10);
+
+  final_optimization_max_iterations = config.param<int>("global_mapping", "final_optimization_max_iterations", 0);
+  final_overlap_search_rounds = config.param<int>("global_mapping", "final_overlap_search_rounds", 0);
 
   save_merged_pcd = config.param<bool>("global_mapping", "save_merged_pcd", true);
 }
@@ -429,6 +383,69 @@ void GlobalMapping::optimize() {
   Callbacks::on_update_submaps(submaps);
 }
 
+// Batch LM over the whole graph (every factor relinearized each iteration), then restart iSAM2 from the result.
+// iSAM2 only relinearizes variables whose delta exceeds isam2_relinearize_thresh, so late loop closures that move
+// each submap only slightly are otherwise never fully propagated before the map is saved.
+void GlobalMapping::optimize_batch() {
+  if (params.final_optimization_max_iterations <= 0 || !params.enable_optimization || isam2->empty()) {
+    return;
+  }
+
+  gtsam::NonlinearFactorGraph factors;
+  for (const auto& factor : isam2->getFactorsUnsafe()) {
+    if (factor) {
+      factors.push_back(factor);
+    }
+  }
+  gtsam::Values values = isam2->calculateEstimate();
+
+  logger->info("final batch optimization (|factors|={} |values|={} max_iterations={})", factors.size(), values.size(), params.final_optimization_max_iterations);
+  gtsam_points::LevenbergMarquardtExtParams lm_params;
+  lm_params.setMaxIterations(params.final_optimization_max_iterations);
+  lm_params.callback = [this](const auto& status, const auto& values) { logger->info(status.to_string()); };
+
+  try {
+#ifdef GTSAM_USE_TBB
+    auto arena = static_cast<tbb::task_arena*>(tbb_task_arena.get());
+    arena->execute([&] {
+#endif
+      values = gtsam_points::LevenbergMarquardtOptimizerExt(factors, values, lm_params).optimize();
+#ifdef GTSAM_USE_TBB
+    });
+#endif
+  } catch (const std::exception& e) {
+    logger->error("final batch optimization failed, keeping the iSAM2 estimate: {}", e.what());
+    return;
+  }
+
+  gtsam::ISAM2Params isam2_params;
+  if (params.use_isam2_dogleg) {
+    isam2_params.setOptimizationParams(gtsam::ISAM2DoglegParams());
+  }
+  isam2_params.relinearizeSkip = params.isam2_relinearize_skip;
+  isam2_params.setRelinearizeThreshold(params.isam2_relinearize_thresh);
+  isam2.reset(new gtsam_points::ISAM2Ext(isam2_params));
+  update_isam2(factors, values);
+
+  update_submaps();
+  Callbacks::on_update_submaps(submaps);
+}
+
+// Implicit loop factors are searched only when a submap is inserted, using the drifted estimate of that moment.
+// Once loop closures have corrected the trajectory, many true overlaps have no factor yet: search again with the
+// corrected poses and re-optimize, until no new overlapping pairs appear.
+void GlobalMapping::finalize() {
+  optimize_batch();
+  for (int round = 0; round < params.final_overlap_search_rounds; round++) {
+    const size_t num_factors = isam2->getFactorsUnsafe().size();
+    find_overlapping_submaps(params.min_implicit_loop_overlap);
+    if (isam2->getFactorsUnsafe().size() == num_factors) {
+      break;
+    }
+    optimize_batch();
+  }
+}
+
 std::shared_ptr<gtsam::NonlinearFactorGraph> GlobalMapping::create_between_factors(int current) const {
   auto factors = std::make_shared<gtsam::NonlinearFactorGraph>();
   if (current == 0 || !params.enable_between_factors) {
@@ -598,6 +615,7 @@ gtsam_points::ISAM2ResultExt GlobalMapping::update_isam2(const gtsam::NonlinearF
 
 void GlobalMapping::save(const std::string& path) {
   optimize();
+  finalize();
 
   boost::filesystem::create_directories(path);
 
@@ -689,7 +707,7 @@ void GlobalMapping::save(const std::string& path) {
     const auto merged = export_points();
     if (!merged || !merged->has_points()) {
       logger->warn("no points available for merged map export");
-    } else if (!save_pcd(pcd_path, *merged)) {
+    } else if (!save_points_pcd(pcd_path, *merged)) {
       logger->warn("failed to write merged map to {}", pcd_path);
     } else {
       logger->info("saved merged map with {} points to {}", merged->size(), pcd_path);
@@ -702,55 +720,7 @@ void GlobalMapping::save(const std::string& path) {
 
 
 gtsam_points::PointCloud::Ptr GlobalMapping::export_points() {
-  auto merged = std::make_shared<gtsam_points::PointCloudCPU>();
-
-  size_t total_points = 0;
-  for (const auto& submap : submaps) {
-    if (!submap || !submap->frame) {
-      continue;
-    }
-    total_points += submap->frame->size();
-  }
-
-  std::vector<Eigen::Vector4d> points;
-  points.reserve(total_points);
-
-  bool export_intensities = true;
-  for (const auto& submap : submaps) {
-    if (!submap || !submap->frame || !submap->frame->has_intensities()) {
-      export_intensities = false;
-      break;
-    }
-  }
-
-  std::vector<double> intensities;
-  if (export_intensities) {
-    intensities.reserve(total_points);
-  }
-
-  for (const auto& submap : submaps) {
-    if (!submap || !submap->frame) {
-      continue;
-    }
-
-    for (int i = 0; i < submap->frame->size(); i++) {
-      const Eigen::Vector4d point = submap->T_world_origin * submap->frame->points[i];
-      points.push_back(point);
-
-      if (export_intensities) {
-        intensities.push_back(submap->frame->intensities[i]);
-      }
-    }
-  }
-
-  if (!points.empty()) {
-    merged->add_points(points);
-    if (export_intensities) {
-      merged->add_intensities(intensities);
-    }
-  }
-
-  return merged;
+  return merge_submap_points(submaps);
 }
 
 bool GlobalMapping::load(const std::string& path) {

@@ -94,4 +94,10 @@ public:
   std::unordered_map<std::string, std::shared_ptr<void>> custom_data;  ///< User-defined custom data
 };
 
+/// Merge the points of all submaps into one cloud in the world frame
+gtsam_points::PointCloud::Ptr merge_submap_points(const std::vector<SubMap::Ptr>& submaps);
+
+/// Write points as a binary PCD file (x y z, plus intensity if available)
+bool save_points_pcd(const std::string& path, const gtsam_points::PointCloud& points);
+
 }  // namespace  glim

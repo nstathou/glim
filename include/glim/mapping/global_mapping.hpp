@@ -53,6 +53,8 @@ public:
 
   double init_pose_damping_scale;
 
+  int final_optimization_max_iterations;  ///< Batch LM iterations run on save (0 = disabled)
+  int final_overlap_search_rounds;        ///< Rounds of overlapping-submap search + batch LM run on save (0 = disabled)
   bool save_merged_pcd;
 };
 
@@ -86,6 +88,8 @@ private:
   std::shared_ptr<gtsam::NonlinearFactorGraph> create_matching_cost_factors(int current) const;
 
   void update_submaps();
+  void optimize_batch();
+  void finalize();
   gtsam_points::ISAM2ResultExt update_isam2(const gtsam::NonlinearFactorGraph& new_factors, const gtsam::Values& new_values);
 
   void recover_graph() override;

@@ -50,8 +50,18 @@ public:
   double vgicp_voxel_resolution;
 
   double odom_factor_stddev;
+  double odom_rot_stddev;           ///< Odometry factor rotation stddev [rad] (default: odom_factor_stddev)
+  double odom_rot_stddev_per_m;     ///< Added rotation stddev per meter traveled between submaps [rad/m]
+  double odom_trans_stddev;         ///< Odometry factor translation stddev [m] (default: odom_factor_stddev)
+  double odom_trans_stddev_per_m;   ///< Added translation stddev per meter traveled between submaps [m/m]
+  double odom_rot_stddev_per_rad;   ///< Added rotation stddev per radian rotated between submaps [rad/rad]
+  double odom_trans_stddev_per_rad; ///< Added translation stddev per radian rotated between submaps [m/rad]
   double loop_factor_stddev;
+  double loop_rot_stddev;  ///< Rotation stddev [rad] of the loop's best constrained rotation direction (with loop_use_registration_hessian)
+  bool loop_use_registration_hessian;  ///< Shape the loop information with the registration Hessian (strongest direction = loop_factor_stddev)
+  std::string loop_factor_robust_type;  ///< HUBER or CAUCHY
   double loop_factor_robust_width;
+  int loop_batch_max_iterations;    ///< Batch LM over the whole pose graph when new loops arrive (0 = iSAM2 only)
 
   int loop_candidate_buffer_size;
   int loop_candidate_eval_per_thread;
@@ -61,6 +71,19 @@ public:
   double isam2_relinearize_thresh;
 
   double init_pose_damping_scale;
+
+  // Dense VGICP refinement run on save, initialized with the pose graph estimate
+  int refine_max_iterations;  ///< 0 = disabled
+  int refine_rounds;          ///< Rounds of overlapping-pair search + LM, stops when no new pairs appear
+  double refine_voxel_resolution;
+  int refine_voxelmap_levels;
+  double refine_voxelmap_scaling_factor;
+  double refine_randomsampling_rate;
+  double refine_min_overlap;
+  double refine_max_distance;
+  double refine_odom_information_scale;  ///< Odometry factor information multiplier during refinement
+
+  bool save_merged_pcd;
 
   int num_threads;
 };
@@ -108,6 +131,8 @@ private:
   std::shared_ptr<gtsam::NonlinearFactorGraph> collect_detected_loops();
 
   void update_submaps();
+  void optimize_batch();
+  std::unique_ptr<gtsam::Values> refine();
 
   void loop_detection_task();
 
@@ -118,6 +143,7 @@ private:
   std::mt19937 mt;
 
   std::atomic_bool kill_switch;
+  std::atomic_int loop_backlog;  ///< Loop candidates queued or being evaluated
   std::thread loop_detection_thread;
   ConcurrentVector<LoopCandidate> loop_candidates;
   ConcurrentVector<gtsam_points::shared_ptr<gtsam::NonlinearFactor>> detected_loops;

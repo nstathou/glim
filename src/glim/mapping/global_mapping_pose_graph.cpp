@@ -17,7 +17,10 @@
 #include <gtsam_points/optimizers/isam2_ext_dummy.hpp>
 #include <gtsam_points/optimizers/levenberg_marquardt_ext.hpp>
 #include <gtsam_points/util/parallelism.hpp>
+#include <gtsam_points/types/point_cloud_cpu.hpp>
+#include <gtsam_points/types/gaussian_voxelmap_cpu.hpp>
 
+#include <set>
 #include <glim/util/config.hpp>
 #include <glim/util/serialization.hpp>
 #include <glim/mapping/callbacks.hpp>
@@ -51,8 +54,18 @@ GlobalMappingPoseGraphParams::GlobalMappingPoseGraphParams() {
   vgicp_voxel_resolution = config.param<double>("global_mapping", "vgicp_voxel_resolution", 2.0);
 
   odom_factor_stddev = config.param<double>("global_mapping", "odom_factor_stddev", 1e-3);
+  odom_rot_stddev = config.param<double>("global_mapping", "odom_rot_stddev", odom_factor_stddev);
+  odom_rot_stddev_per_m = config.param<double>("global_mapping", "odom_rot_stddev_per_m", 0.0);
+  odom_trans_stddev = config.param<double>("global_mapping", "odom_trans_stddev", odom_factor_stddev);
+  odom_trans_stddev_per_m = config.param<double>("global_mapping", "odom_trans_stddev_per_m", 0.0);
+  odom_rot_stddev_per_rad = config.param<double>("global_mapping", "odom_rot_stddev_per_rad", 0.0);
+  odom_trans_stddev_per_rad = config.param<double>("global_mapping", "odom_trans_stddev_per_rad", 0.0);
   loop_factor_stddev = config.param<double>("global_mapping", "loop_factor_stddev", 0.1);
+  loop_rot_stddev = config.param<double>("global_mapping", "loop_rot_stddev", loop_factor_stddev);
+  loop_use_registration_hessian = config.param<bool>("global_mapping", "loop_use_registration_hessian", false);
+  loop_factor_robust_type = config.param<std::string>("global_mapping", "loop_factor_robust_type", "HUBER");
   loop_factor_robust_width = config.param<double>("global_mapping", "loop_factor_robust_width", 1.0);
+  loop_batch_max_iterations = config.param<int>("global_mapping", "loop_batch_max_iterations", 0);
 
   loop_candidate_buffer_size = config.param<int>("global_mapping", "loop_candidate_buffer_size", 100);
   loop_candidate_eval_per_thread = config.param<int>("global_mapping", "loop_candidate_eval_per_thread", 2);
@@ -62,6 +75,18 @@ GlobalMappingPoseGraphParams::GlobalMappingPoseGraphParams() {
   isam2_relinearize_thresh = config.param<double>("global_mapping", "isam2_relinearize_thresh", 0.1);
 
   init_pose_damping_scale = config.param<double>("global_mapping", "init_pose_damping_scale", 1e10);
+
+  refine_max_iterations = config.param<int>("global_mapping", "refine_max_iterations", 0);
+  refine_rounds = config.param<int>("global_mapping", "refine_rounds", 1);
+  refine_voxel_resolution = config.param<double>("global_mapping", "refine_voxel_resolution", 0.3);
+  refine_voxelmap_levels = config.param<int>("global_mapping", "refine_voxelmap_levels", 2);
+  refine_voxelmap_scaling_factor = config.param<double>("global_mapping", "refine_voxelmap_scaling_factor", 2.0);
+  refine_randomsampling_rate = config.param<double>("global_mapping", "refine_randomsampling_rate", 0.2);
+  refine_min_overlap = config.param<double>("global_mapping", "refine_min_overlap", 0.15);
+  refine_max_distance = config.param<double>("global_mapping", "refine_max_distance", 10.0);
+  refine_odom_information_scale = config.param<double>("global_mapping", "refine_odom_information_scale", 1.0);
+
+  save_merged_pcd = config.param<bool>("global_mapping", "save_merged_pcd", false);
 
   num_threads = config.param<int>("global_mapping", "num_threads", 2);
 }
@@ -91,6 +116,7 @@ GlobalMappingPoseGraph::GlobalMappingPoseGraph(const GlobalMappingPoseGraphParam
 #endif
 
   kill_switch = false;
+  loop_backlog = 0;
   loop_detection_thread = std::thread([this] { loop_detection_task(); });
 }
 
@@ -138,8 +164,9 @@ void GlobalMappingPoseGraph::insert_submap(const SubMap::Ptr& submap) {
     new_factors->add(*create_odometry_factors(current));
 
     find_loop_candidates(current);
-    new_factors->add(*collect_detected_loops());
   }
+  const auto loops = collect_detected_loops();
+  new_factors->add(*loops);
 
   Callbacks::on_smoother_update(*isam2, *new_factors, *new_values);
   try {
@@ -162,6 +189,10 @@ void GlobalMappingPoseGraph::insert_submap(const SubMap::Ptr& submap) {
   new_values.reset(new gtsam::Values);
   new_factors.reset(new gtsam::NonlinearFactorGraph);
 
+  if (!loops->empty()) {
+    optimize_batch();
+  }
+
   update_submaps();
   Callbacks::on_update_submaps(submaps);
 }
@@ -173,7 +204,8 @@ void GlobalMappingPoseGraph::optimize() {
 
   gtsam::NonlinearFactorGraph new_factors;
   gtsam::Values new_values;
-  new_factors.add(*collect_detected_loops());
+  const auto loops = collect_detected_loops();
+  new_factors.add(*loops);
 
   Callbacks::on_smoother_update(*isam2, new_factors, new_values);
 
@@ -189,12 +221,168 @@ void GlobalMappingPoseGraph::optimize() {
 
   Callbacks::on_smoother_update_result(*isam2, result);
 
+  if (!loops->empty()) {
+    optimize_batch();
+  }
+
   update_submaps();
   Callbacks::on_update_submaps(submaps);
 }
 
+// Batch LM over the whole pose graph, then restart iSAM2 from the result.
+// A new loop moves every submap along the loop only slightly, so iSAM2 (relinearizing only above isam2_relinearize_thresh)
+// would converge over many later updates. A pose graph is small, so a full solve here takes milliseconds.
+void GlobalMappingPoseGraph::optimize_batch() {
+  if (params.loop_batch_max_iterations <= 0 || !params.enable_optimization || isam2->empty()) {
+    return;
+  }
+
+  gtsam::NonlinearFactorGraph factors;
+  for (const auto& factor : isam2->getFactorsUnsafe()) {
+    if (factor) {
+      factors.push_back(factor);
+    }
+  }
+  gtsam::Values values = isam2->calculateEstimate();
+
+  gtsam_points::LevenbergMarquardtExtParams lm_params;
+  lm_params.setMaxIterations(params.loop_batch_max_iterations);
+
+  try {
+#ifdef GTSAM_USE_TBB
+    auto arena = static_cast<tbb::task_arena*>(tbb_task_arena.get());
+    arena->execute([&] {
+#endif
+      values = gtsam_points::LevenbergMarquardtOptimizerExt(factors, values, lm_params).optimize();
+#ifdef GTSAM_USE_TBB
+    });
+#endif
+  } catch (const std::exception& e) {
+    logger->error("loop batch optimization failed, keeping the iSAM2 estimate: {}", e.what());
+    return;
+  }
+  logger->info("loop batch optimization done (|factors|={} |values|={})", factors.size(), values.size());
+
+  gtsam::ISAM2Params isam2_params;
+  if (params.use_isam2_dogleg) {
+    isam2_params.setOptimizationParams(gtsam::ISAM2DoglegParams());
+  }
+  isam2_params.relinearizeSkip = params.isam2_relinearize_skip;
+  isam2_params.setRelinearizeThreshold(params.isam2_relinearize_thresh);
+  isam2.reset(new gtsam_points::ISAM2Ext(isam2_params));
+
+  try {
+#ifdef GTSAM_USE_TBB
+    auto arena = static_cast<tbb::task_arena*>(tbb_task_arena.get());
+    arena->execute([&] {
+#endif
+      isam2->update(factors, values);
+#ifdef GTSAM_USE_TBB
+    });
+#endif
+  } catch (const std::exception& e) {
+    logger->error("an exception was caught while restarting iSAM2: {}", e.what());
+  }
+}
+
+// Dense VGICP refinement (GLIM-style matching cost factors between all overlapping submaps) initialized with the pose graph
+// estimate. Odometry factors are kept, loop factors are replaced by the matching cost factors. Returns nullptr if disabled.
+// ponytail: runs only on save; move to a background thread on a graph snapshot if a refined map is needed online.
+std::unique_ptr<gtsam::Values> GlobalMappingPoseGraph::refine() {
+  if (params.refine_max_iterations <= 0 || !params.enable_optimization || isam2->empty() || submaps.size() < 2) {
+    return nullptr;
+  }
+
+  std::vector<std::vector<gtsam_points::GaussianVoxelMap::Ptr>> voxelmaps(submaps.size());
+  std::vector<gtsam_points::PointCloud::ConstPtr> sampled(submaps.size());
+  for (int i = 0; i < submaps.size(); i++) {
+    sampled[i] = params.refine_randomsampling_rate > 0.99 ? submaps[i]->frame : gtsam_points::random_sampling(submaps[i]->frame, params.refine_randomsampling_rate, mt);
+    for (int level = 0; level < params.refine_voxelmap_levels; level++) {
+      const double resolution = params.refine_voxel_resolution * std::pow(params.refine_voxelmap_scaling_factor, level);
+      auto voxelmap = std::make_shared<gtsam_points::GaussianVoxelMapCPU>(resolution);
+      voxelmap->insert(*submaps[i]->frame);  // Full cloud for the target, only the source is sampled
+      voxelmaps[i].push_back(voxelmap);
+    }
+  }
+
+  // Keep all factors but the loop factors (between factors of non-consecutive submaps)
+  gtsam::NonlinearFactorGraph graph;
+  for (const auto& factor : isam2->getFactorsUnsafe()) {
+    if (!factor) {
+      continue;
+    }
+    if (factor->keys().size() == 2 && std::abs(static_cast<long>(gtsam::Symbol(factor->keys()[0]).index()) - static_cast<long>(gtsam::Symbol(factor->keys()[1]).index())) != 1) {
+      continue;
+    }
+    // Stiffen the odometry chain: tier 1 already placed the submaps, refinement should only polish them locally
+    const auto between = dynamic_cast<const gtsam::BetweenFactor<gtsam::Pose3>*>(factor.get());
+    if (between && params.refine_odom_information_scale != 1.0) {
+      const gtsam::Vector sigmas = between->noiseModel()->sigmas() / std::sqrt(params.refine_odom_information_scale);
+      graph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(between->key1(), between->key2(), between->measured(), gtsam::noiseModel::Diagonal::Sigmas(sigmas));
+      continue;
+    }
+    graph.push_back(factor);
+  }
+
+  auto values = std::make_unique<gtsam::Values>(isam2->calculateEstimate());
+  std::set<std::pair<int, int>> pairs;
+  for (int round = 0; round < std::max(1, params.refine_rounds); round++) {
+    int num_new_pairs = 0;
+    for (int i = 0; i < submaps.size(); i++) {
+      const Eigen::Isometry3d T_world_i(values->at<gtsam::Pose3>(X(i)).matrix());
+      for (int j = i + 1; j < submaps.size(); j++) {
+        if (pairs.count({i, j})) {
+          continue;
+        }
+        const Eigen::Isometry3d delta = T_world_i.inverse() * Eigen::Isometry3d(values->at<gtsam::Pose3>(X(j)).matrix());
+        if (delta.translation().norm() > params.refine_max_distance) {
+          continue;
+        }
+        if (gtsam_points::overlap_auto(voxelmaps[i].back(), sampled[j], delta) < params.refine_min_overlap) {
+          continue;
+        }
+
+        pairs.emplace(i, j);
+        num_new_pairs++;
+        for (const auto& voxelmap : voxelmaps[i]) {
+          auto factor = gtsam::make_shared<gtsam_points::IntegratedVGICPFactor>(X(i), X(j), voxelmap, sampled[j]);
+          factor->set_num_threads(params.num_threads);
+          graph.add(factor);
+        }
+      }
+    }
+
+    logger->info("refinement round {}: {} new overlapping pairs ({} total)", round, num_new_pairs, pairs.size());
+    if (round > 0 && num_new_pairs == 0) {
+      break;
+    }
+
+    gtsam_points::LevenbergMarquardtExtParams lm_params;
+    lm_params.setMaxIterations(params.refine_max_iterations);
+    lm_params.callback = [this](const auto& status, const auto& values) { logger->debug(status.to_string()); };
+    try {
+      *values = gtsam_points::LevenbergMarquardtOptimizerExt(graph, *values, lm_params).optimize();
+    } catch (const std::exception& e) {
+      logger->error("refinement failed, keeping the pose graph estimate: {}", e.what());
+      return nullptr;
+    }
+  }
+
+  for (int i = 0; i < submaps.size(); i++) {
+    submaps[i]->T_world_origin = Eigen::Isometry3d(values->at<gtsam::Pose3>(X(i)).matrix());
+  }
+  Callbacks::on_update_submaps(submaps);
+  return values;
+}
+
 void GlobalMappingPoseGraph::save(const std::string& path) {
+  // Wait for the loop candidates of the last submaps, otherwise the final loops (often the end-to-start ones) are lost
+  logger->info("waiting for {} pending loop candidates", loop_backlog.load());
+  while (loop_backlog > 0 && !kill_switch) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
   optimize();
+  const auto refined_values = refine();
 
   boost::filesystem::create_directories(path);
 
@@ -202,7 +390,7 @@ void GlobalMappingPoseGraph::save(const std::string& path) {
 
   logger->info("serializing factor graph to {}/graph.bin", path);
   serializeToBinaryFile(serializable_factors, path + "/graph.bin");
-  serializeToBinaryFile(isam2->calculateEstimate(), path + "/values.bin");
+  serializeToBinaryFile(refined_values ? *refined_values : isam2->calculateEstimate(), path + "/values.bin");
 
   std::ofstream ofs(path + "/graph.txt");
   ofs << "num_submaps: " << submaps.size() << std::endl;
@@ -242,10 +430,21 @@ void GlobalMappingPoseGraph::save(const std::string& path) {
 
     submaps[i]->save((boost::format("%s/%06d") % path % i).str());
   }
+
+  if (params.save_merged_pcd) {
+    const auto merged = export_points();
+    if (merged->size() && save_points_pcd(path + "/map.pcd", *merged)) {
+      logger->info("saved merged map with {} points to {}/map.pcd", merged->size(), path);
+    } else {
+      logger->warn("failed to export merged map to {}/map.pcd", path);
+    }
+  }
+
+  GlobalConfig::instance()->dump(path + "/config");
 }
 
 gtsam_points::PointCloud::Ptr GlobalMappingPoseGraph::export_points() {
-  return std::make_shared<gtsam_points::PointCloudCPU>();
+  return merge_submap_points(submaps);
 }
 
 void GlobalMappingPoseGraph::insert_submap(int current, const SubMap::Ptr& submap) {
@@ -297,7 +496,14 @@ std::shared_ptr<gtsam::NonlinearFactorGraph> GlobalMappingPoseGraph::create_odom
 
   const int last = current - 1;
   const gtsam::Pose3 T_last_current = gtsam::Pose3((submaps[last]->origin_frame()->T_world_sensor().inverse() * submaps[current]->origin_frame()->T_world_sensor()).matrix());
-  factors->emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(X(last), X(current), T_last_current, gtsam::noiseModel::Isotropic::Sigma(6, params.odom_factor_stddev));
+  // Odometry drift grows with the distance traveled and the angle rotated between the submap origins
+  const double dist = T_last_current.translation().norm();
+  const double angle = T_last_current.rotation().axisAngle().second;
+  const double rot_stddev = params.odom_rot_stddev + params.odom_rot_stddev_per_m * dist + params.odom_rot_stddev_per_rad * angle;
+  const double trans_stddev = params.odom_trans_stddev + params.odom_trans_stddev_per_m * dist + params.odom_trans_stddev_per_rad * angle;
+  gtsam::Vector6 sigmas;
+  sigmas << gtsam::Vector3::Constant(rot_stddev), gtsam::Vector3::Constant(trans_stddev);
+  factors->emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(X(last), X(current), T_last_current, gtsam::noiseModel::Diagonal::Sigmas(sigmas));
 
   return factors;
 }
@@ -332,6 +538,7 @@ void GlobalMappingPoseGraph::find_loop_candidates(int current) {
     new_candidates.emplace_back(LoopCandidate{submap_targets[i], submap_targets[current], T_target_source});
   }
 
+  loop_backlog += new_candidates.size();
   loop_candidates.insert(new_candidates);
 }
 
@@ -349,7 +556,8 @@ void GlobalMappingPoseGraph::loop_detection_task() {
 
   while (!kill_switch) {
     logger->debug("wait for loop candidates");
-    auto new_candidates = loop_candidates.get_all_and_clear_wait();
+    // Keep evaluating the buffered candidates even when no new ones arrive (e.g., after the last submap)
+    auto new_candidates = candidates_buffer.empty() ? loop_candidates.get_all_and_clear_wait() : loop_candidates.get_all_and_clear();
     candidates_buffer.insert(candidates_buffer.end(), new_candidates.begin(), new_candidates.end());
 
     logger->debug("|candidates_buffer|={}", candidates_buffer.size());
@@ -357,6 +565,7 @@ void GlobalMappingPoseGraph::loop_detection_task() {
     // Regulate the size of the candidate buffer.
     while (candidates_buffer.size() > params.loop_candidate_buffer_size) {
       std::shuffle(candidates_buffer.begin(), candidates_buffer.end(), mt);
+      loop_backlog -= candidates_buffer.size() - params.loop_candidate_buffer_size;
       candidates_buffer.resize(params.loop_candidate_buffer_size);
     }
 
@@ -373,6 +582,7 @@ void GlobalMappingPoseGraph::loop_detection_task() {
 
     std::vector<double> inlier_fractions(candidates.size(), 0.0);
     std::vector<gtsam::Pose3> T_target_source(candidates.size());
+    std::vector<gtsam::Matrix6> H_source(candidates.size(), gtsam::Matrix6::Identity());
 
     const auto evaluate_candidate = [&](int i) {
       if (kill_switch) {
@@ -402,6 +612,7 @@ void GlobalMappingPoseGraph::loop_detection_task() {
 
         error = factor->error(values);
         inlier_fraction = factor->inlier_fraction();
+        H_source[i] = factor->linearize(values)->hessianBlockDiagonal()[0];
       } else if (params.registration_type == "VGICP") {
         auto factor = gtsam::make_shared<gtsam_points::IntegratedVGICPFactor>(gtsam::Pose3(), 0, candidate.target->voxels, candidate.source->subsampled);
 
@@ -415,6 +626,7 @@ void GlobalMappingPoseGraph::loop_detection_task() {
 
         error = factor->error(values);
         inlier_fraction = factor->inlier_fraction();
+        H_source[i] = factor->linearize(values)->hessianBlockDiagonal()[0];
       } else {
         logger->warn("unknown registration type: {}", params.registration_type);
         return;
@@ -460,15 +672,43 @@ void GlobalMappingPoseGraph::loop_detection_task() {
       if (inlier_fractions[i] < params.min_inliear_fraction) {
         continue;
       }
+      const gtsam::Pose3 correction = gtsam::Pose3(candidates[i].init_T_target_source.matrix()).between(T_target_source[i]);
+      logger->info(
+        "loop accepted target={} source={} inlier_fraction={:.3f} correction={:.3f} m {:.2f} deg",
+        candidates[i].target->submap->id,
+        candidates[i].source->submap->id,
+        inlier_fractions[i],
+        correction.translation().norm(),
+        correction.rotation().axisAngle().second * 180.0 / M_PI);
 
       // Create factor.
       gtsam::SharedNoiseModel noise_model = gtsam::noiseModel::Isotropic::Sigma(6, params.loop_factor_stddev);
-      noise_model = gtsam::noiseModel::Robust::Create(gtsam::noiseModel::mEstimator::Huber::Create(params.loop_factor_robust_width), noise_model);
+      if (params.loop_use_registration_hessian) {
+        // The raw registration Hessian is far overconfident (thousands of points): keep its shape (e.g., weak along a corridor)
+        // and scale the rotation and translation blocks so that their best constrained directions have loop_rot_stddev [rad]
+        // and loop_factor_stddev [m] (a single scale would mix rad and m and leave the rotation almost unconstrained)
+        const gtsam::Matrix6& H_raw = H_source[i];
+        const double max_eig_rot = Eigen::SelfAdjointEigenSolver<gtsam::Matrix3>(H_raw.topLeftCorner<3, 3>()).eigenvalues().maxCoeff();
+        const double max_eig_trans = Eigen::SelfAdjointEigenSolver<gtsam::Matrix3>(H_raw.bottomRightCorner<3, 3>()).eigenvalues().maxCoeff();
+        if (max_eig_rot > 0.0 && max_eig_trans > 0.0) {
+          gtsam::Vector6 scale;
+          scale << gtsam::Vector3::Constant(1.0 / (std::sqrt(max_eig_rot) * params.loop_rot_stddev)),
+            gtsam::Vector3::Constant(1.0 / (std::sqrt(max_eig_trans) * params.loop_factor_stddev));
+          const gtsam::Matrix6 H = scale.asDiagonal() * H_raw * scale.asDiagonal() + 1e-3 * gtsam::Matrix6::Identity();
+          noise_model = gtsam::noiseModel::Gaussian::Information(H);
+        }
+      }
+      if (params.loop_factor_robust_type == "CAUCHY") {
+        noise_model = gtsam::noiseModel::Robust::Create(gtsam::noiseModel::mEstimator::Cauchy::Create(params.loop_factor_robust_width), noise_model);
+      } else {
+        noise_model = gtsam::noiseModel::Robust::Create(gtsam::noiseModel::mEstimator::Huber::Create(params.loop_factor_robust_width), noise_model);
+      }
       factors.emplace_back(
         gtsam::make_shared<gtsam::BetweenFactor<gtsam::Pose3>>(X(candidates[i].target->submap->id), X(candidates[i].source->submap->id), T_target_source[i], noise_model));
     }
 
     detected_loops.insert(factors);
+    loop_backlog -= candidates.size();
   }
 }
 
