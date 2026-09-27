@@ -15,16 +15,16 @@
   */
   "odometry_estimation": {
     "so_name": "libodometry_estimation_fastlio2.so",
-    "num_threads": 8,
+    "num_threads": 1,
     "max_iterations": 8,
     "filter_size_surf": 0.3,
     "filter_size_map": 0.3,
-    "cube_side_length": 1500.0,
+    "cube_side_length": 500.0,
     "det_range": 60.0,
     "gyr_cov": 0.01,
     "acc_cov": 0.01,
-    "b_gyr_cov": 0.0001,
-    "b_acc_cov": 0.0001,
+    "b_gyr_cov": 0.001,
+    "b_acc_cov": 0.001,
     "extrinsic_est_en": false
   }
 }
