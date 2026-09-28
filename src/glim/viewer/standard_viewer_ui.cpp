@@ -1,6 +1,9 @@
 #include <glim/viewer/standard_viewer.hpp>
 
+#include <fstream>
+#include <filesystem>
 #include <spdlog/spdlog.h>
+#include <nlohmann/json.hpp>
 
 #include <gtsam_points/config.hpp>
 #include <gtsam_points/types/point_cloud_cpu.hpp>
@@ -12,6 +15,9 @@
 #include <glim/util/logging.hpp>
 #include <glim/util/trajectory_manager.hpp>
 
+#include <glk/colormap.hpp>
+#include <glk/lines.hpp>
+#include <glk/thin_lines.hpp>
 #include <glk/pointcloud_buffer.hpp>
 #include <glk/primitives/primitives.hpp>
 #include <guik/spdlog_sink.hpp>
@@ -50,7 +56,11 @@ bool StandardViewer::drawable_filter(const std::string& name) {
     return false;
   }
 
-  if (!show_submaps && starts_with(name, "submap_")) {
+  if (!show_submap_frames && starts_with(name, "submap_coord_")) {
+    return false;
+  }
+
+  if (!show_submaps && starts_with(name, "submap_") && !starts_with(name, "submap_coord_")) {
     return false;
   }
 
@@ -63,6 +73,192 @@ bool StandardViewer::drawable_filter(const std::string& name) {
   }
 
   return true;
+}
+
+namespace {
+void set_line_width(const glk::Drawable::ConstPtr& drawable, float width) {
+  auto lines = std::dynamic_pointer_cast<const glk::ThinLines>(drawable);
+  if (lines) {
+    std::const_pointer_cast<glk::ThinLines>(lines)->set_line_width(width);  // !!
+  }
+}
+}  // namespace
+
+void StandardViewer::apply_camera_mode() {
+  auto viewer = guik::LightViewer::instance();
+  switch (camera_mode) {
+    default:
+    case 0:
+      viewer->use_orbit_camera_control();
+      break;
+    case 1:
+      viewer->use_sensor_view_camera_control(Eigen::Translation3f(-0.05f, 0.0f, 0.0f) * Eigen::Isometry3f::Identity(), 1e-3, 1e-3);
+      break;
+    case 2:
+      viewer->use_sensor_view_camera_control();
+      break;
+    case 3:
+      viewer->use_topdown_camera_control();
+      break;
+  }
+}
+
+// Load (save=false) or save (save=true) the UI settings in ~/.config/glim/standard_viewer.json.
+// Loaded values override config_viewer.json. Delete the file to go back to the config defaults.
+void StandardViewer::sync_settings(bool save) {
+  const char* home = std::getenv("HOME");
+  const std::filesystem::path path = std::filesystem::path(home ? home : ".") / ".config/glim/standard_viewer.json";
+
+  nlohmann::json json;
+  if (!save) {
+    std::ifstream ifs(path);
+    if (!ifs) {
+      return;
+    }
+    json = nlohmann::json::parse(ifs, nullptr, false);
+    if (json.is_discarded()) {
+      logger->warn("failed to parse {}", path.string());
+      return;
+    }
+  }
+
+  try {
+    const auto field = [&](const std::string& name, auto& value) {
+      if (save) {
+        json[name] = value;
+      } else if (json.contains(name)) {
+        json.at(name).get_to(value);
+      }
+    };
+    const auto field2 = [&](const std::string& name, Eigen::Vector2f& value) {
+      std::array<float, 2> v = {value[0], value[1]};
+      field(name, v);
+      value << v[0], v[1];
+    };
+
+    field("track", track);
+    field("show_current_coord", show_current_coord);
+    field("show_current_points", show_current_points);
+    field("show_odometry_scans", show_odometry_scans);
+    field("show_odometry_keyframes", show_odometry_keyframes);
+    field("show_odometry_factors", show_odometry_factors);
+    field("show_submaps", show_submaps);
+    field("show_submap_frames", show_submap_frames);
+    field("show_factors", show_factors);
+    field("show_odom_traj", show_odom_traj);
+    field("show_submap_traj", show_submap_traj);
+    field("show_global_traj", show_global_traj);
+    field("camera_mode", camera_mode);
+    for (auto& style : colors) {
+      field(style.name + "_color_mode", style.mode);
+      std::array<float, 3> rgb = {style.color[0], style.color[1], style.color[2]};
+      field(style.name + "_color", rgb);
+      style.color << rgb[0], rgb[1], rgb[2], 1.0f;
+    }
+    field("z_range_mode", z_range_mode);
+    field2("z_range", z_range);
+    field("auto_intensity_range", auto_intensity_range);
+    field2("intensity_range", intensity_range);
+    field("point_size", point_size);
+    field("points_alpha", points_alpha);
+    field("traj_width", traj_width);
+    field("factors_width", factors_width);
+    for (auto& a : axes) {
+      field2(a.name, a.length_radius);
+    }
+  } catch (const nlohmann::json::exception& e) {
+    logger->warn("failed to {} {}: {}", save ? "save" : "load", path.string(), e.what());
+    return;
+  }
+
+  if (save) {
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream ofs(path);
+    ofs << json.dump(2) << std::endl;
+    if (!ofs) {
+      logger->warn("failed to save {}", path.string());
+      return;
+    }
+    logger->info("viewer settings saved to {}", path.string());
+  }
+}
+
+void StandardViewer::apply_color(guik::ShaderSetting& shader_setting, int group, int id) const {
+  const auto& style = colors[group];
+  switch (style.mode) {
+    default:
+    case FLAT:
+      shader_setting.set_color_mode(guik::ColorMode::FLAT_COLOR).set_color(style.color);
+      break;
+    case HEIGHT:
+      shader_setting.set_color_mode(guik::ColorMode::RAINBOW);
+      break;
+    case INTENSITY:
+      shader_setting.set_color_mode(guik::ColorMode::VERTEX_COLORMAP);
+      break;
+    case NORMAL:
+      shader_setting.set_color_mode(guik::ColorMode::VERTEX_COLOR);
+      break;
+    case INDEX:
+      shader_setting.set_color_mode(guik::ColorMode::FLAT_COLOR).set_color(glk::colormap_categoricalf(glk::COLORMAP::TURBO, id, 16));
+      break;
+  }
+
+  if (group == SUBMAP_COLOR) {
+    shader_setting.set_alpha(points_alpha);
+  }
+}
+
+void StandardViewer::update_colors(int group) {
+  const auto& style = colors[group];
+  auto viewer = guik::LightViewer::instance();
+  auto context = style.panel ? viewer->sub_viewer("submap").get() : viewer;
+
+  for (auto& [name, drawable] : context->get_drawables()) {
+    if (name.find("coord") != std::string::npos) {
+      continue;
+    }
+    for (const auto& prefix : style.prefixes) {
+      if (name.rfind(prefix, 0) == 0) {
+        apply_color(*drawable.first, group, std::atoi(name.substr(name.rfind('_') + 1).c_str()));
+      }
+    }
+  }
+}
+
+void StandardViewer::update_axes() {
+  // glk::Lines width is in world units, so the axes get a real thickness (unlike the thin-line coordinate_system primitive)
+  const auto make_axes = [](const Eigen::Vector2f& length_radius) {
+    const float l = length_radius[0];
+    const std::vector<Eigen::Vector3f> vertices = {
+      Eigen::Vector3f::Zero(),
+      Eigen::Vector3f(l, 0.0f, 0.0f),
+      Eigen::Vector3f::Zero(),
+      Eigen::Vector3f(0.0f, l, 0.0f),
+      Eigen::Vector3f::Zero(),
+      Eigen::Vector3f(0.0f, 0.0f, l)};
+    const std::vector<Eigen::Vector4f> colors = {
+      Eigen::Vector4f(1.0f, 0.0f, 0.0f, 1.0f),
+      Eigen::Vector4f(1.0f, 0.0f, 0.0f, 1.0f),
+      Eigen::Vector4f(0.0f, 1.0f, 0.0f, 1.0f),
+      Eigen::Vector4f(0.0f, 1.0f, 0.0f, 1.0f),
+      Eigen::Vector4f(0.0f, 0.0f, 1.0f, 1.0f),
+      Eigen::Vector4f(0.0f, 0.0f, 1.0f, 1.0f)};
+    return std::make_shared<glk::Lines>(2.0f * length_radius[1], vertices, colors);
+  };
+
+  for (auto& a : axes) {
+    a.drawable = make_axes(a.length_radius);
+  }
+
+  for (auto& [name, drawable] : guik::LightViewer::instance()->get_drawables()) {
+    for (const auto& a : axes) {
+      if (name.rfind(a.prefix, 0) == 0) {
+        drawable.second = a.drawable;
+      }
+    }
+  }
 }
 
 void StandardViewer::drawable_selection() {
@@ -89,6 +285,11 @@ void StandardViewer::drawable_selection() {
   ImGui::Checkbox("coord", &show_current_coord);
   ImGui::SameLine();
   ImGui::Checkbox("points", &show_current_points);
+  ImGui::SameLine();
+  if (ImGui::Button("Save view")) {
+    sync_settings(true);
+  }
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save the viewer settings (also done on exit)");
 
   ImGui::Separator();
   bool show_odometry = show_odometry_scans || show_odometry_keyframes || show_odometry_factors;
@@ -102,16 +303,19 @@ void StandardViewer::drawable_selection() {
     show_odometry_status = true;
   }
 
-  ImGui::Checkbox("scans##odom", &show_odometry_scans);
+  ImGui::Checkbox("window scans##odom", &show_odometry_scans);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scans (points + axes) in the odometry smoother window");
   ImGui::SameLine();
-  ImGui::Checkbox("keyframes##odom", &show_odometry_keyframes);
+  ImGui::Checkbox("local map##odom", &show_odometry_keyframes);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Snapshot of the odometry scan matching target map (refreshed every 50 frames)");
   ImGui::SameLine();
-  ImGui::Checkbox("factors##odom", &show_odometry_factors);
+  ImGui::Checkbox("smoother factors##odom", &show_odometry_factors);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Constraints in the odometry smoother (scan matching, IMU)");
 
   ImGui::Separator();
-  bool show_mapping = show_submaps || show_factors;
+  bool show_mapping = show_submaps || show_submap_frames || show_factors;
   if (ImGui::Checkbox("mapping", &show_mapping)) {
-    show_submaps = show_factors = show_mapping;
+    show_submaps = show_submap_frames = show_factors = show_mapping;
   }
 
   ImGui::SameLine();
@@ -129,7 +333,9 @@ void StandardViewer::drawable_selection() {
     viewer->register_ui_callback("logging", guik::create_logger_ui(glim::get_ringbuffer_sink(), 0.5));
   }
 
-  ImGui::Checkbox("submaps", &show_submaps);
+  ImGui::Checkbox("submap points", &show_submaps);
+  ImGui::SameLine();
+  ImGui::Checkbox("submap frames", &show_submap_frames);
   ImGui::SameLine();
   ImGui::Checkbox("factors", &show_factors);
 
@@ -147,51 +353,67 @@ void StandardViewer::drawable_selection() {
   std::vector<const char*> camera_modes = {"STANDARD", "FPS", "TPS", "TOPDOWN"};
   ImGui::SetNextItemWidth(92);
   if (ImGui::Combo("camera_mode", &camera_mode, camera_modes.data(), camera_modes.size())) {
-    switch (camera_mode) {
-      default:
-      case 0:
-        viewer->use_orbit_camera_control();
-        break;
-      case 1:
-        viewer->use_sensor_view_camera_control(Eigen::Translation3f(-0.05f, 0.0f, 0.0f) * Eigen::Isometry3f::Identity(), 1e-3, 1e-3);
-        break;
-      case 2:
-        viewer->use_sensor_view_camera_control();
-        break;
-      case 3:
-        viewer->use_topdown_camera_control();
-        break;
-    }
+    apply_camera_mode();
   }
 
-  std::vector<const char*> odom_color_modes = {"FLAT", "INTENSITY", "NORMAL"};
-  ImGui::SetNextItemWidth(92);
-  ImGui::Combo("odom_color_mode", &odom_color_mode, odom_color_modes.data(), odom_color_modes.size());
+  const std::vector<const char*> color_modes = {"FLAT", "HEIGHT", "INTENSITY", "NORMAL", "INDEX"};
+  bool any_height = false;
+  bool any_intensity = false;
+  for (int group = 0; group < colors.size(); group++) {
+    auto& style = colors[group];
+    bool changed = false;
+    ImGui::SetNextItemWidth(92);
+    changed |= ImGui::Combo(style.name.c_str(), &style.mode, color_modes.data(), color_modes.size());
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("HEIGHT: z_range rainbow, NORMAL: |normal| as RGB, INDEX: one color per scan/submap");
+    if (style.mode == FLAT) {
+      ImGui::SameLine();
+      changed |= ImGui::ColorEdit3(("##color_" + style.name).c_str(), style.color.data(), ImGuiColorEditFlags_NoInputs);
+    }
+    if (changed) {
+      update_colors(group);
+    }
+    any_height |= style.mode == HEIGHT;
+    any_intensity |= style.mode == INTENSITY;
+  }
 
-  std::vector<const char*> submap_color_modes = {"RAINBOW", "INTENSITY", "COLOR"};
   ImGui::SetNextItemWidth(92);
-  if (ImGui::Combo("submap_color_mode", &submap_color_mode, submap_color_modes.data(), submap_color_modes.size())) {
+  if (ImGui::DragFloat("point_size", &point_size, 0.001f, 0.001f, 10.0f, "%.3f")) {
+    viewer->shader_setting().set_point_size(point_size);
+  }
+
+  ImGui::SetNextItemWidth(92);
+  if (ImGui::SliderFloat("points_alpha", &points_alpha, 0.0f, 1.0f)) {
     for (int i = 0;; i++) {
       const auto found = viewer->find_drawable("submap_" + std::to_string(i));
       if (!found.first) {
         break;
       }
-
-      switch (submap_color_mode) {
-        case 0:
-          found.first->set_color_mode(guik::ColorMode::RAINBOW);
-          break;
-        case 1:
-          found.first->set_color_mode(guik::ColorMode::VERTEX_COLORMAP);
-          break;
-        case 2:
-          found.first->set_color_mode(guik::ColorMode::VERTEX_COLOR);
-          break;
-      }
+      found.first->set_alpha(points_alpha).make_transparent();
     }
   }
 
-  if (submap_color_mode == 0) {
+  bool axes_changed = false;
+  for (auto& a : axes) {
+    ImGui::SetNextItemWidth(150);
+    axes_changed |= ImGui::DragFloat2((a.name + " (len, rad)").c_str(), a.length_radius.data(), 0.005f, 0.001f, 100.0f, "%.3f");
+  }
+  if (axes_changed) {
+    update_axes();
+  }
+
+  ImGui::SetNextItemWidth(92);
+  if (ImGui::DragFloat("traj_width", &traj_width, 0.1f, 1.0f, 20.0f, "%.1f")) {
+    for (const auto& name : {"traj_odom", "traj_submap", "traj_global"}) {
+      set_line_width(viewer->find_drawable(name).second, traj_width);
+    }
+  }
+
+  ImGui::SetNextItemWidth(92);
+  if (ImGui::DragFloat("factors_width", &factors_width, 0.1f, 1.0f, 20.0f, "%.1f")) {
+    set_line_width(viewer->find_drawable("factors").second, factors_width);
+  }
+
+  if (any_height) {
     std::vector<const char*> z_range_modes = {"AUTO", "LOCAL", "MANUAL"};
     bool update_z_range = false;
 
@@ -209,7 +431,7 @@ void StandardViewer::drawable_selection() {
     }
   }
 
-  if (odom_color_mode == 1 || submap_color_mode == 1) {
+  if (any_intensity) {
     ImGui::Checkbox("auto_intensity_range", &auto_intensity_range);
     if (auto_intensity_range) {
       intensity_range[0] = intensity_dist.min();
@@ -219,52 +441,7 @@ void StandardViewer::drawable_selection() {
     ImGui::SetNextItemWidth(150);
     ImGui::DragFloatRange2("intensity_range", &intensity_range[0], &intensity_range[1], 0.1f, -65536.0f, 65536.0f);
     viewer->shader_setting().add<Eigen::Vector2f>("cmap_range", Eigen::Vector2f(intensity_range[0], intensity_range[1]));
-  }
-
-  if (ImGui::Checkbox("Cumulative rendering", &enable_partial_rendering)) {
-    if (enable_partial_rendering && !viewer->partial_rendering_enabled()) {
-      viewer->enable_partial_rendering(1e-1);
-      viewer->shader_setting().add("dynamic_object", 1);
-    } else {
-      viewer->disable_partial_rendering();
-    }
-
-    // Update existing submap buffers
-    for (int i = 0;; i++) {
-      auto found = viewer->find_drawable("submap_" + std::to_string(i));
-      if (!found.first) {
-        break;
-      }
-
-      auto cb = std::dynamic_pointer_cast<const glk::PointCloudBuffer>(found.second);
-      auto cloud_buffer = std::const_pointer_cast<glk::PointCloudBuffer>(cb);  // !!
-
-      if (enable_partial_rendering) {
-        cloud_buffer->enable_partial_rendering(partial_rendering_budget);
-        found.first->add("dynamic_object", 0).make_transparent();
-      } else {
-        cloud_buffer->disable_partial_rendering();
-        found.first->add("dynamic_object", 1);
-      }
-    }
-  }
-
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(60);
-  ImGui::DragInt("Budget", &partial_rendering_budget, 1, 1, 1000000);
-
-  if (ImGui::Checkbox("Backface cull", &enable_backface_culling)) {
-    if (enable_backface_culling) {
-      viewer->enable_backface_culling();
-    } else {
-      viewer->disable_backface_culling();
-    }
-  }
-
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(120);
-  if (ImGui::DragFloatRange2("Range", &backface_culling_range[0], &backface_culling_range[1], 0.01f, -1.1f, 1.1f)) {
-    viewer->set_backface_culling_range(backface_culling_range);
+    viewer->sub_viewer("submap")->shader_setting().add<Eigen::Vector2f>("cmap_range", Eigen::Vector2f(intensity_range[0], intensity_range[1]));
   }
 
   ImGui::End();
@@ -272,22 +449,24 @@ void StandardViewer::drawable_selection() {
   if (show_odometry_status) {
     ImGui::Begin("odometry status", &show_odometry_status, ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::Text("frame ID:%d", last_id);
+    ImGui::Text("rate:%.1f Hz (sensor %.1f Hz)", frontend_hz, sensor_hz);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Wall-clock rate of odometry output vs rate of the scan stamps. Front-end lags if lower than sensor.");
     ImGui::Text("points:%d", last_num_points);
     ImGui::Text("median dist:%.3f", last_median_distance);
 
-    std::stringstream sst;
-    if (last_voxel_resolutions.empty()) {
-      sst << "voxel_resolution: N/A";
-    } else {
+    // Only GPU odometry attaches voxelmaps to frames
+    if (!last_voxel_resolutions.empty()) {
+      std::stringstream sst;
       sst << "voxel_resolution: ";
       for (double r : last_voxel_resolutions) {
         sst << fmt::format("{:.3f}", r) << " ";
       }
+      const std::string text = sst.str();
+      ImGui::Text("%s", text.c_str());
     }
-    const std::string text = sst.str();
-    ImGui::Text("%s", text.c_str());
 
-    ImGui::Text("stamp:%.3f ~ %.3f", last_point_stamps.first, last_point_stamps.second);
+    ImGui::Text("point time:%.3f ~ %.3f s", last_point_stamps.first, last_point_stamps.second);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("First/last per-point time offset of the raw scan, relative to the scan stamp (i.e. scan duration)");
     ImGui::Text("vel:%.3f %.3f %.3f", last_imu_vel[0], last_imu_vel[1], last_imu_vel[2]);
     ImGui::Text("bias:%.3f %.3f %.3f %.3f %.3f %.3f", last_imu_bias[0], last_imu_bias[1], last_imu_bias[2], last_imu_bias[3], last_imu_bias[4], last_imu_bias[5]);
     ImGui::End();

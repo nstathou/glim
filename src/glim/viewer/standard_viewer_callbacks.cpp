@@ -38,6 +38,21 @@
 
 namespace glim {
 
+namespace {
+// |normal| as RGB for the NORMAL color mode
+// ponytail: always uploaded (+16 B/point of GPU memory), upload lazily on first NORMAL use if memory gets tight
+void add_normal_colors(glk::PointCloudBuffer& cloud_buffer, const gtsam_points::PointCloud& frame) {
+  if (!frame.has_normals()) {
+    return;
+  }
+  std::vector<Eigen::Vector4f> colors(frame.size());
+  for (size_t i = 0; i < frame.size(); i++) {
+    colors[i] << frame.normals[i].head<3>().cast<float>().cwiseAbs(), 1.0f;
+  }
+  cloud_buffer.add_color(colors);
+}
+}  // namespace
+
 void StandardViewer::set_callbacks() {
   using std::placeholders::_1;
   using std::placeholders::_2;
@@ -77,7 +92,8 @@ void StandardViewer::set_callbacks() {
 
   // New frame callback
   OdometryEstimationCallbacks::on_new_frame.add([this](const EstimationFrame::ConstPtr& new_frame) {
-    invoke([this, new_frame] {
+    const auto frame_time = std::chrono::steady_clock::now();
+    invoke([this, new_frame, frame_time] {
       auto viewer = guik::LightViewer::instance();
       auto cloud_buffer = std::make_shared<glk::PointCloudBuffer>(new_frame->frame->points, new_frame->frame->size());
 
@@ -102,6 +118,14 @@ void StandardViewer::set_callbacks() {
         cloud_buffer->add_colormap(intensities);
       }
 
+      if (last_frame_stamp > 0.0) {
+        const auto ema = [](double hz, double dt) { return dt > 0.0 ? (hz > 0.0 ? 0.9 * hz + 0.1 / dt : 1.0 / dt) : hz; };
+        frontend_hz = ema(frontend_hz, std::chrono::duration<double>(frame_time - last_frame_time).count());
+        sensor_hz = ema(sensor_hz, new_frame->stamp - last_frame_stamp);
+      }
+      last_frame_time = frame_time;
+      last_frame_stamp = new_frame->stamp;
+
       last_id = new_frame->id;
       last_num_points = new_frame->frame->size();
       if (new_frame->raw_frame && new_frame->raw_frame->size()) {
@@ -123,39 +147,21 @@ void StandardViewer::set_callbacks() {
 
       // Front-end trajectory (raw odometry IMU poses, red)
       odom_traj.push_back(new_frame->T_world_imu.translation().cast<float>());
-      viewer->update_drawable("traj_odom", std::make_shared<glk::ThinLines>(odom_traj, true, 2.0f), guik::FlatRed());
+      viewer->update_drawable("traj_odom", std::make_shared<glk::ThinLines>(odom_traj, true, traj_width), guik::FlatRed());
 
       if (track) {
         viewer->lookat(pose);
       }
 
-      guik::ShaderSetting shader_setting = guik::FlatColor(1.0f, 0.5f, 0.0f, 1.0f, pose);
+      add_normal_colors(*cloud_buffer, *new_frame->frame);
+
+      guik::ShaderSetting shader_setting = guik::Rainbow(pose);
       guik::ShaderSetting shader_setting_rainbow = guik::Rainbow(pose);
-
-      switch (odom_color_mode) {
-        case 0:  // FLAT
-          break;
-        case 1:  // INTENSITY
-          shader_setting.set_color_mode(guik::ColorMode::VERTEX_COLORMAP);
-          shader_setting_rainbow.set_color_mode(guik::ColorMode::VERTEX_COLORMAP);
-          break;
-        case 2:  // NORMAL
-          if (new_frame->frame->normals) {
-            std::vector<Eigen::Vector4d> normals(new_frame->frame->normals, new_frame->frame->normals + new_frame->frame->size());
-            for (auto& normal : normals) {
-              normal = normal.array().abs();
-              normal[3] = 1.0;
-            }
-            cloud_buffer->add_color(normals);
-          }
-
-          shader_setting.set_color_mode(guik::ColorMode::VERTEX_COLORMAP);
-          shader_setting_rainbow.set_color_mode(guik::ColorMode::VERTEX_COLORMAP);
-          break;
-      }
+      apply_color(shader_setting, CURRENT_COLOR, new_frame->id);
+      apply_color(shader_setting_rainbow, WINDOW_COLOR, new_frame->id);
 
       viewer->update_drawable("current_frame", cloud_buffer, shader_setting.add("point_scale", 2.0f));
-      viewer->update_drawable("current_coord", glk::Primitives::coordinate_system(), guik::VertexColor(pose * Eigen::UniformScaling<float>(1.5f)));
+      viewer->update_drawable("current_coord", axes[CURRENT_AXES].drawable, guik::VertexColor(pose));
       viewer->update_drawable("frame_" + std::to_string(new_frame->id), cloud_buffer, shader_setting_rainbow);
     });
   });
@@ -170,8 +176,8 @@ void StandardViewer::set_callbacks() {
 
         viewer->update_drawable(
           "frame_coord_" + std::to_string(frame->id),
-          glk::Primitives::coordinate_system(),
-          guik::VertexColor(resolve_pose(frame) * Eigen::UniformScaling<float>(0.5f)));
+          axes[WINDOW_AXES].drawable,
+          guik::VertexColor(resolve_pose(frame)));
         auto drawable = viewer->find_drawable("frame_" + std::to_string(frame->id));
         if (drawable.first) {
           drawable.first->add<Eigen::Matrix4f>("model_matrix", pose.matrix());
@@ -200,36 +206,15 @@ void StandardViewer::set_callbacks() {
             std::vector<float> intensities(keyframe->frame->intensities, keyframe->frame->intensities + keyframe->frame->size());
             cloud_buffer->add_colormap(intensities);
           }
+          add_normal_colors(*cloud_buffer, *keyframe->frame);
 
           guik::Rainbow shader_setting(pose);
-          switch (odom_color_mode) {
-            case 0:  // FLAT
-              break;
-            case 1:  // INTENSITY
-              shader_setting.set_color_mode(guik::ColorMode::VERTEX_COLORMAP);
-              break;
-            case 2:  // NORMAL
-              break;
-          }
+          apply_color(shader_setting, LOCAL_MAP_COLOR, keyframe->id);
 
           viewer->update_drawable(name, cloud_buffer, shader_setting);
         } else {
-          switch (odom_color_mode) {
-            case 0:
-              drawable.first->set_color_mode(guik::ColorMode::RAINBOW);
-              break;
-            case 1:
-              drawable.first->set_color_mode(guik::ColorMode::VERTEX_COLORMAP);
-              break;
-            case 2:
-              drawable.first->set_color_mode(guik::ColorMode::RAINBOW);
-              break;
-          }
-
           drawable.first->add("model_matrix", pose.matrix());
         }
-
-        viewer->update_drawable("odometry_keyframe_coord_" + std::to_string(keyframe->id), glk::Primitives::coordinate_system(), guik::VertexColor(pose));
       }
     });
   });
@@ -380,7 +365,6 @@ void StandardViewer::set_callbacks() {
       auto viewer = guik::LightViewer::instance();
       for (const auto& keyframe : keyframes) {
         viewer->remove_drawable("odometry_keyframe_" + std::to_string(keyframe->id));
-        viewer->remove_drawable("odometry_keyframe_coord_" + std::to_string(keyframe->id));
         odometry_poses.erase(keyframe->id);
       }
     });
@@ -395,14 +379,15 @@ void StandardViewer::set_callbacks() {
       auto viewer = guik::LightViewer::instance();
       auto sub_viewer = viewer->sub_viewer("submap");
 
-      const Eigen::Vector4f color = glk::colormap_categoricalf(glk::COLORMAP::TURBO, id, 16);
       const auto cloud_buffer = std::make_shared<glk::PointCloudBuffer>(frame->points, frame->size());
       if (frame->has_intensities()) {
         std::vector<float> intensities(frame->intensities, frame->intensities + frame->size());
         cloud_buffer->add_colormap(intensities);
       }
+      add_normal_colors(*cloud_buffer, *frame);
 
-      guik::FlatColor shader_setting(color);
+      guik::ShaderSetting shader_setting = guik::Rainbow();
+      apply_color(shader_setting, PANEL_COLOR, id);
       if (id == 0) {
         sub_viewer->clear_text();
         sub_viewer->clear_drawables();
@@ -449,7 +434,7 @@ void StandardViewer::set_callbacks() {
 
     invoke([this, positions] {
       submap_traj.insert(submap_traj.end(), positions.begin(), positions.end());
-      guik::LightViewer::instance()->update_drawable("traj_submap", std::make_shared<glk::ThinLines>(submap_traj, true, 2.0f), guik::FlatColor(1.0f, 1.0f, 0.0f, 1.0f));
+      guik::LightViewer::instance()->update_drawable("traj_submap", std::make_shared<glk::ThinLines>(submap_traj, true, traj_width), guik::FlatColor(1.0f, 1.0f, 0.0f, 1.0f));
     });
   });
 
@@ -516,21 +501,10 @@ void StandardViewer::set_callbacks() {
         std::vector<float> intensities(submap->frame->intensities, submap->frame->intensities + submap->frame->size());
         cloud_buffer->add_colormap(intensities);
       }
+      add_normal_colors(*cloud_buffer, *submap->frame);
 
-      auto shader_setting = guik::Rainbow(T_world_origin->matrix().cast<float>());
-      switch (submap_color_mode) {
-        case 0:  // RAINBOW
-          shader_setting.set_color_mode(guik::ColorMode::RAINBOW);
-          break;
-        case 1:  // INTENSITY
-          shader_setting.set_color_mode(guik::ColorMode::VERTEX_COLORMAP);
-          break;
-        case 2:  // COLOR
-          shader_setting.set_color_mode(guik::ColorMode::VERTEX_COLOR);
-          break;
-      }
-
-      shader_setting.set_alpha(points_alpha);
+      guik::ShaderSetting shader_setting = guik::Rainbow(T_world_origin->matrix().cast<float>());
+      apply_color(shader_setting, SUBMAP_COLOR, submap->id);
 
       if (enable_partial_rendering) {
         cloud_buffer->enable_partial_rendering(partial_rendering_budget);
@@ -553,7 +527,7 @@ void StandardViewer::set_callbacks() {
       submap_poses[i] = submaps[i]->T_world_origin.cast<float>();
     }
 
-    // Global mapping trajectory (same as traj_imu.txt in the dump, green), rebuilt since past submap poses change
+    // Global mapping trajectory (same as traj_imu.txt in the dump, magenta), rebuilt since past submap poses change
     std::vector<Eigen::Vector3f> global_traj;
     for (const auto& submap : submaps) {
       const Eigen::Isometry3d T_world_endpoint_L = submap->T_world_origin * submap->T_origin_endpoint_L;
@@ -574,7 +548,7 @@ void StandardViewer::set_callbacks() {
 
     invoke([this, latest_submap, submap_ids, submap_poses, mem_stats, global_traj] {
       auto viewer = guik::LightViewer::instance();
-      viewer->update_drawable("traj_global", std::make_shared<glk::ThinLines>(global_traj, true, 2.0f), guik::FlatGreen());
+      viewer->update_drawable("traj_global", std::make_shared<glk::ThinLines>(global_traj, true, traj_width), guik::FlatColor(1.0f, 0.0f, 1.0f, 1.0f));
 
       submap_memstats.insert(submap_memstats.end(), mem_stats.begin(), mem_stats.end());
 
@@ -591,7 +565,7 @@ void StandardViewer::set_callbacks() {
         if (drawable.first) {
           drawable.first->add("model_matrix", submap_poses[i].matrix());
         }
-        viewer->update_drawable("submap_coord_" + std::to_string(submap_ids[i]), glk::Primitives::coordinate_system(), guik::VertexColor(submap_poses[i]));
+        viewer->update_drawable("submap_coord_" + std::to_string(submap_ids[i]), axes[SUBMAP_AXES].drawable, guik::VertexColor(submap_poses[i]));
       }
 
       std::vector<unsigned int> indices;
@@ -603,7 +577,7 @@ void StandardViewer::set_callbacks() {
         }
       }
 
-      viewer->update_drawable("factors", std::make_shared<glk::ThinLines>(submap_positions, indices), guik::FlatGreen().set_alpha(factors_alpha));
+      viewer->update_drawable("factors", std::make_shared<glk::ThinLines>(submap_positions, indices, false, factors_width), guik::FlatGreen().set_alpha(factors_alpha));
 
       Eigen::Vector2f z = z_range;
       if (z_range_mode == 0) {

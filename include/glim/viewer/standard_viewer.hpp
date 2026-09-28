@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mutex>
+#include <chrono>
 #include <atomic>
 #include <thread>
 #include <memory>
@@ -22,6 +23,15 @@ class logger;
 
 namespace gtsam {
 class NonlinearFactor;
+}
+
+namespace glk {
+class Drawable;
+class PointCloudBuffer;
+}
+
+namespace guik {
+class ShaderSetting;
 }
 
 namespace glim {
@@ -51,6 +61,11 @@ private:
 
   bool drawable_filter(const std::string& name);
   void drawable_selection();
+  void update_axes();
+  void apply_camera_mode();
+  void apply_color(guik::ShaderSetting& shader_setting, int group, int id) const;
+  void update_colors(int group);
+  void sync_settings(bool save);
 
 private:
   std::atomic_bool viewer_started;
@@ -58,8 +73,6 @@ private:
   std::atomic_bool kill_switch;
   std::thread thread;
 
-  bool enable_backface_culling;
-  Eigen::Vector2f backface_culling_range;
 
   bool enable_partial_rendering;
   int partial_rendering_budget;
@@ -68,14 +81,13 @@ private:
   bool show_current_coord;
   bool show_current_points;
   int camera_mode;
-  int odom_color_mode;
-  int submap_color_mode;
 
   bool show_odometry_scans;
   bool show_odometry_keyframes;
   bool show_odometry_factors;
 
   bool show_submaps;
+  bool show_submap_frames;
   bool show_factors;
 
   // Trajectories of each stage, drawn uncorrected in the world frame to compare drift directly
@@ -89,6 +101,10 @@ private:
   int last_id;
   int last_num_points;
   std::pair<double, double> last_point_stamps;
+  std::chrono::steady_clock::time_point last_frame_time;
+  double last_frame_stamp;
+  double frontend_hz;  // Wall-clock rate of new odometry frames (EMA)
+  double sensor_hz;    // Rate of the frame stamps (EMA)
   Eigen::Vector3d last_imu_vel;
   Eigen::Matrix<double, 6, 1> last_imu_bias;
   double last_median_distance;
@@ -111,7 +127,32 @@ private:
 
   size_t total_gl_bytes;
 
-  double point_size;
+  float point_size;
+
+  // Coordinate axes markers, one style per group of drawables
+  enum AxesType { SUBMAP_AXES, WINDOW_AXES, CURRENT_AXES };
+  struct Axes {
+    std::string name;                // UI label and config key
+    std::string prefix;              // Name prefix of the drawables using this style
+    Eigen::Vector2f length_radius;   // [m]
+    std::shared_ptr<const glk::Drawable> drawable;
+  };
+  std::vector<Axes> axes;
+
+  // Point cloud coloring, one style per group of drawables
+  enum ColorMode { FLAT, HEIGHT, INTENSITY, NORMAL, INDEX };
+  enum ColorGroup { CURRENT_COLOR, WINDOW_COLOR, LOCAL_MAP_COLOR, SUBMAP_COLOR, PANEL_COLOR };
+  struct ColorStyle {
+    std::string name;                   // UI label and settings key
+    std::vector<std::string> prefixes;  // Name prefixes of the drawables using this style (*coord* drawables are skipped)
+    bool panel;                         // Drawables live in the submap panel instead of the main viewer
+    int mode;                           // ColorMode
+    Eigen::Vector4f color;              // FLAT color
+  };
+  std::vector<ColorStyle> colors;
+
+  float traj_width;     // [px]
+  float factors_width;  // [px]
   bool point_size_metric;
   bool point_shape_circle;
 
@@ -119,7 +160,7 @@ private:
   Eigen::Vector2f z_range;
   Eigen::Vector2f auto_z_range;
   double last_submap_z;
-  double points_alpha;
+  float points_alpha;
   double factors_alpha;
 
   bool auto_intensity_range;

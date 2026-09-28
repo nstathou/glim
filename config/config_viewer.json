@@ -18,7 +18,17 @@
     "point_size_metric": true,
     "point_size": 0.025,
     "points_alpha": 0.5,
-    "factors_alpha": 0.5
+    "factors_alpha": 0.5,
+    // Coordinate axes (length, radius) in meters
+    // submap_keyframe_axis : Global mapping submaps (one per keyframe with passthrough sub_mapping)
+    // window_axis          : Odometry frames in the smoother window
+    // current_axis         : Latest odometry frame
+    "submap_keyframe_axis": [1.0, 0.05],
+    "window_axis": [0.5, 0.01],
+    "current_axis": [1.5, 0.05],
+    // Line widths in pixels of the trajectories and the global mapping factors (odometry + loop closure edges)
+    "traj_width": 2.0,
+    "factors_width": 1.0
   },
   "interactive_viewer": {
     "viewer_width": 2560,

@@ -57,7 +57,7 @@
     // Refinement keeps the odometry chain stiff (sigma / 10): tier 1 already placed the submaps
     "refine_odom_information_scale": 100.0,
     "save_merged_pcd": true,
-    "merged_pcd_voxel_resolution": 0.005,
+    "merged_pcd_voxel_resolution": 0,
     "num_threads": 4
   }
 }

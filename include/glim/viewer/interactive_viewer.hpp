@@ -99,13 +99,13 @@ protected:
   bool enable_partial_rendering;
   int partial_rendering_budget;
 
-  double point_size;
+  float point_size;
   bool point_size_metric;
   bool point_shape_circle;
 
   Eigen::Vector2f z_range;
 
-  double points_alpha;
+  float points_alpha;
   double factors_alpha;
 
   std::atomic_bool needs_session_merge;

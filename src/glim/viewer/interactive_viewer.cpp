@@ -105,6 +105,8 @@ void InteractiveViewer::viewer_loop() {
   auto viewer = guik::LightViewer::instance(Eigen::Vector2i(2560, 1440));
   viewer->enable_info_buffer();
   viewer->enable_vsync();
+  viewer->set_clear_color(Eigen::Vector4f(0.0f, 0.0f, 0.0f, 1.0f));
+  viewer->disable_xy_grid();
   viewer->shader_setting().add("z_range", z_range);
 
   viewer->shader_setting().set_point_size(point_size);
@@ -232,6 +234,11 @@ void InteractiveViewer::drawable_selection() {
     show_note("Submap selection sphere maker scale.");
 
     auto viewer = guik::viewer();
+    if (ImGui::DragFloat("point size", &point_size, 0.001f, 0.001f, 10.0f, "%.3f")) {
+      viewer->shader_setting().set_point_size(point_size);
+    }
+
+    do_update_viewer |= ImGui::SliderFloat("points alpha", &points_alpha, 0.0f, 1.0f);
     if (ImGui::Checkbox("Cumulative rendering", &enable_partial_rendering)) {
       if (enable_partial_rendering && !viewer->partial_rendering_enabled()) {
         viewer->enable_partial_rendering(1e-1);
@@ -437,6 +444,7 @@ void InteractiveViewer::update_viewer() {
     auto drawable = viewer->find_drawable("submap_" + std::to_string(submap->id));
     if (drawable.first) {
       drawable.first->add("model_matrix", submap_pose.matrix());
+      drawable.first->set_alpha(points_alpha).make_transparent();
 
       switch (color_mode) {
         case 0:

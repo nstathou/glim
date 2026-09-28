@@ -50,13 +50,12 @@ StandardViewer::StandardViewer() : logger(create_module_logger("viewer")) {
   show_current_coord = true;
   show_current_points = true;
   camera_mode = 0;
-  odom_color_mode = 0;
-  submap_color_mode = 0;
 
   show_odometry_scans = true;
   show_odometry_keyframes = true;
   show_odometry_factors = false;
   show_submaps = true;
+  show_submap_frames = true;
   show_factors = true;
   show_odom_traj = true;
   show_submap_traj = true;
@@ -65,6 +64,7 @@ StandardViewer::StandardViewer() : logger(create_module_logger("viewer")) {
   show_odometry_status = false;
   last_id = last_num_points = 0;
   last_point_stamps = std::make_pair(0.0, 0.0);
+  last_frame_stamp = frontend_hz = sensor_hz = 0.0;
   last_imu_vel.setZero();
   last_imu_bias.setZero();
   last_median_distance = 0.0;
@@ -92,15 +92,29 @@ StandardViewer::StandardViewer() : logger(create_module_logger("viewer")) {
 
   point_size = config.param("standard_viewer", "point_size", 0.025);
   point_size_metric = config.param("standard_viewer", "point_size_metric", true);
+  axes = {
+    {"submap_keyframe_axis", "submap_coord_", Eigen::Vector2f(1.0f, 0.05f), nullptr},
+    {"window_axis", "frame_coord_", Eigen::Vector2f(0.5f, 0.01f), nullptr},
+    {"current_axis", "current_coord", Eigen::Vector2f(1.5f, 0.05f), nullptr}};
+  for (auto& a : axes) {
+    a.length_radius = config.param("standard_viewer", a.name, Eigen::Vector2d(a.length_radius.cast<double>())).cast<float>();
+  }
+  colors = {
+    {"current_scan", {"current_frame"}, false, FLAT, Eigen::Vector4f(1.0f, 0.5f, 0.0f, 1.0f)},
+    {"window_scans", {"frame_"}, false, HEIGHT, Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f)},
+    {"local_map", {"odometry_keyframe_"}, false, FLAT, Eigen::Vector4f(0.0f, 0.8f, 1.0f, 1.0f)},
+    {"submaps", {"submap_"}, false, HEIGHT, Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f)},
+    {"panel_scans", {"frame_"}, true, INDEX, Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f)}};
+  traj_width = config.param("standard_viewer", "traj_width", 2.0);
+  factors_width = config.param("standard_viewer", "factors_width", 1.0);
   point_shape_circle = config.param("standard_viewer", "point_shape_circle", true);
 
   trajectory.reset(new TrajectoryManager);
 
-  enable_backface_culling = false;
-  backface_culling_range = Eigen::Vector2f(0.0f, 1.1f);
-
   enable_partial_rendering = config.param("standard_viewer", "enable_partial_rendering", false);
   partial_rendering_budget = config.param("standard_viewer", "partial_rendering_budget", 1024);
+
+  sync_settings(false);
 
   set_callbacks();
   thread = std::thread([this] { viewer_loop(); });
@@ -150,6 +164,12 @@ void StandardViewer::viewer_loop() {
   viewer_started = true;
 
   viewer->enable_vsync();
+  viewer->set_clear_color(Eigen::Vector4f(0.0f, 0.0f, 0.0f, 1.0f));
+  viewer->disable_xy_grid();
+  update_axes();
+  if (camera_mode != 0) {
+    apply_camera_mode();
+  }
   viewer->shader_setting().add("z_range", z_range);
   viewer->shader_setting().set_point_size(point_size);
 
@@ -169,6 +189,7 @@ void StandardViewer::viewer_loop() {
   auto submap_viewer = viewer->sub_viewer("submap");
   submap_viewer->set_pos(Eigen::Vector2i(100, 800));
   submap_viewer->set_draw_xy_grid(false);
+  submap_viewer->set_clear_color(Eigen::Vector4f(0.0f, 0.0f, 0.0f, 1.0f));
   submap_viewer->use_topdown_camera_control(80.0);
 
   viewer->register_drawable_filter("selection", [this](const std::string& name) { return drawable_filter(name); });
@@ -191,6 +212,7 @@ void StandardViewer::viewer_loop() {
     }
   }
 
+  sync_settings(true);
   guik::LightViewer::destroy();
 }
 
