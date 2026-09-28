@@ -84,6 +84,7 @@ public:
   double refine_odom_information_scale;  ///< Odometry factor information multiplier during refinement
 
   bool save_merged_pcd;
+  double merged_pcd_voxel_resolution;  ///< Voxel grid applied to the merged map.pcd (0 = off)
 
   int num_threads;
 };

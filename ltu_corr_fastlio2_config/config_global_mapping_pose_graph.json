@@ -47,9 +47,9 @@
     "isam2_relinearize_thresh": 0.1,
     // Dense refinement on save
     "refine_max_iterations": 50, // tier 1 already places the submaps; 500 once ran 14 min without gain
-    "refine_rounds": 10,
-    "refine_voxel_resolution": 0.2,
-    "refine_voxelmap_levels": 2,
+    "refine_rounds": 5,
+    "refine_voxel_resolution": 0.1,
+    "refine_voxelmap_levels": 3,
     "refine_voxelmap_scaling_factor": 2.0,
     "refine_randomsampling_rate": 0.2,
     "refine_min_overlap": 0.20,
@@ -57,6 +57,7 @@
     // Refinement keeps the odometry chain stiff (sigma / 10): tier 1 already placed the submaps
     "refine_odom_information_scale": 100.0,
     "save_merged_pcd": true,
+    "merged_pcd_voxel_resolution": 0.005,
     "num_threads": 4
   }
 }

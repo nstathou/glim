@@ -87,6 +87,7 @@ GlobalMappingPoseGraphParams::GlobalMappingPoseGraphParams() {
   refine_odom_information_scale = config.param<double>("global_mapping", "refine_odom_information_scale", 1.0);
 
   save_merged_pcd = config.param<bool>("global_mapping", "save_merged_pcd", false);
+  merged_pcd_voxel_resolution = config.param<double>("global_mapping", "merged_pcd_voxel_resolution", 0.0);
 
   num_threads = config.param<int>("global_mapping", "num_threads", 2);
 }
@@ -432,7 +433,13 @@ void GlobalMappingPoseGraph::save(const std::string& path) {
   }
 
   if (params.save_merged_pcd) {
-    const auto merged = export_points();
+    auto merged = export_points();
+    // Submaps overlap heavily, so the plain concatenation stacks the same surfaces many times
+    if (params.merged_pcd_voxel_resolution > 0.0 && merged->size()) {
+      const size_t num_points = merged->size();
+      merged = gtsam_points::voxelgrid_sampling(merged, params.merged_pcd_voxel_resolution, params.num_threads);
+      logger->info("merged map voxel grid {} m: {} -> {} points", params.merged_pcd_voxel_resolution, num_points, merged->size());
+    }
     if (merged->size() && save_points_pcd(path + "/map.pcd", *merged)) {
       logger->info("saved merged map with {} points to {}/map.pcd", merged->size(), path);
     } else {

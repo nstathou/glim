@@ -20,17 +20,17 @@
     // Keyframe insertion params
     // Only keyframe points go into the submap cloud; FAST-LIO2 odometry is already smooth, no need for dense keyframes
     "keyframe_update_interval_rot": 0.2617994, // 15deg
-    "keyframe_update_interval_trans": 0.3,
+    "keyframe_update_interval_trans": 0.2,
     // Submap issue criteria
     // ~3 m of travel per submap (0.3 m keyframes): one pose graph node per submap, so this sets the correction granularity
-    "max_num_keyframes": 10,
+    "max_num_keyframes": 20,
     "max_num_voxels": -1,
     // Close the submap early when entering new space (voxel count > 2.5x that at the 3rd keyframe)
     "adaptive_max_num_voxels": 2.5,
     // Submap creation params
     "submap_voxel_resolution": 0.1,
     "min_dist_in_voxel": 0.1,
-    "max_num_points_in_voxel": 100,
-    "submap_target_num_points": 50000
+    "max_num_points_in_voxel": 1,
+    "submap_target_num_points": -1
   }
 }
