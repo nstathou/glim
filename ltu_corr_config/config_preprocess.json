@@ -19,9 +19,9 @@
   "preprocess": {
     "distance_near_thresh": 1.0,
     "distance_far_thresh": 60.0,
-    "use_random_grid_downsampling": true,
-    "downsample_resolution": 0.01, // low for indoors, higher for outdoors
-    "random_downsample_target": 10000,
+    "use_random_grid_downsampling": false,
+    "downsample_resolution": 0.05, // low for indoors, higher for outdoors
+    "random_downsample_target": 30000,
     "random_downsample_rate": 0.1,
     "enable_outlier_removal": false,
     "outlier_removal_k": 8,
