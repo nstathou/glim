@@ -1,0 +1,19 @@
+{
+  "global": {
+    "config_ext": "/home/niksta/ros2_ws/install/glim_ext/share/glim_ext/config",
+    "config_flat_earther": "config_flat_earther.json",
+    "config_global_mapping": "config_global_mapping_pose_graph.json",
+    "config_logging": "config_logging.json",
+    "config_odometry": "config_odometry_fastlio2.json",
+    "config_path": "/home/niksta/ros2_ws/src/glim/ltu_car_winter_config",
+    "config_preprocess": "config_preprocess.json",
+    "config_ros": "config_ros.json",
+    "config_sensors": "config_sensors.json",
+    "config_sub_mapping": "config_sub_mapping_passthrough.json",
+    "config_viewer": "config_viewer.json"
+  },
+  "meta": {
+    "imu_frame_id": "vectornav",
+    "lidar_frame_id": "husky/os_sensor"
+  }
+}

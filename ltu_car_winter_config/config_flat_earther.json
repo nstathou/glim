@@ -1,0 +1,10 @@
+{
+  "flat_earther": {
+    "level_factor_stddev": 0.05,
+    "max_neighbor_distance": 25.0,
+    "min_travel_distance": 50.0,
+    "num_nearest_neighbors": 10,
+    "num_random_neighbors": 10,
+    "robust_kernel_width": -1.0
+  }
+}
