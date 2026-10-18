@@ -52,7 +52,7 @@
     // IMU config
     "imu_time_offset": 0.0,
     "points_time_offset": 0.0,
-    "acc_scale": 1.0172, // 9.80665 / 9.6406 (VectorNav static norm); matches FAST-LIO2 internal acc normalization so backend IMU factors agree with its bias estimate
+    "acc_scale": 0.9976, // 9.80665
     // TF config
     "imu_frame_id": "", // Auto-detect if blank
     "lidar_frame_id": "", // Auto-detect if blank
@@ -65,7 +65,8 @@
     "extension_modules": [
       "libmemory_monitor.so",
       "libstandard_viewer.so",
-      "librviz_viewer.so"
+      "librviz_viewer.so",
+      "libglim_inlier.so"
       // "libimu_validator.so"
       // "libdeskewing.so"
     ],

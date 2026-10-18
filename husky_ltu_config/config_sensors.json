@@ -51,12 +51,12 @@
     // LiDAR config
     "global_shutter_lidar": false,
     // Rotation estimated 2026-09-25 by aligning VectorNav and Ouster IMU gyros over ltu_A_2026_09_25 (VectorNav is yawed ~-90 deg w.r.t. os_sensor).
-    // Translation is the earlier guess (not calibrated).
+    // Translation from bag TF (base_link->os_sensor z=0.2, base_link->imu_link identity), not calibrated.
     "imu_bias": [0.0, 0.0, -0.166, 0.0, 0.0, 0.0],
     "T_lidar_imu": [
       0.0,
       0.0,
-      0.10,
+      -0.20,
       -0.0051,
       0.0034,
       -0.7047,
