@@ -169,7 +169,10 @@ void GlobalMappingPoseGraph::insert_submap(const SubMap::Ptr& submap) {
   const auto loops = collect_detected_loops();
   new_factors->add(*loops);
 
+  // Extension modules (e.g. glim_inlier) may append their own loop factors here; those need the batch solve too.
+  const size_t num_factors_before_callbacks = new_factors->size();
   Callbacks::on_smoother_update(*isam2, *new_factors, *new_values);
+  const bool extension_loops = new_factors->size() > num_factors_before_callbacks;
   try {
     gtsam_points::ISAM2ResultExt result;
 #ifdef GTSAM_USE_TBB
@@ -190,7 +193,7 @@ void GlobalMappingPoseGraph::insert_submap(const SubMap::Ptr& submap) {
   new_values.reset(new gtsam::Values);
   new_factors.reset(new gtsam::NonlinearFactorGraph);
 
-  if (!loops->empty()) {
+  if (!loops->empty() || extension_loops) {
     optimize_batch();
   }
 
@@ -208,7 +211,9 @@ void GlobalMappingPoseGraph::optimize() {
   const auto loops = collect_detected_loops();
   new_factors.add(*loops);
 
+  const size_t num_factors_before_callbacks = new_factors.size();
   Callbacks::on_smoother_update(*isam2, new_factors, new_values);
+  const bool extension_loops = new_factors.size() > num_factors_before_callbacks;
 
   gtsam_points::ISAM2ResultExt result;
 #ifdef GTSAM_USE_TBB
@@ -222,7 +227,7 @@ void GlobalMappingPoseGraph::optimize() {
 
   Callbacks::on_smoother_update_result(*isam2, result);
 
-  if (!loops->empty()) {
+  if (!loops->empty() || extension_loops) {
     optimize_batch();
   }
 
